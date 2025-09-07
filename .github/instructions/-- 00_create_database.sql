@@ -1,0 +1,24 @@
+-- 00_create_database.sql
+-- Create OpsGraph DB, schemas, and base config (idempotent)
+
+IF DB_ID('OpsGraph') IS NULL
+BEGIN
+    CREATE DATABASE [OpsGraph];
+    ALTER DATABASE [OpsGraph] SET RECOVERY SIMPLE;
+END;
+GO
+
+USE [OpsGraph];
+GO
+
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'app') EXEC('CREATE SCHEMA app');
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'kg')  EXEC('CREATE SCHEMA kg');
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'sec') EXEC('CREATE SCHEMA sec');
+GO
+
+ALTER DATABASE SCOPED CONFIGURATION SET LEGACY_CARDINALITY_ESTIMATION = OFF;
+GO

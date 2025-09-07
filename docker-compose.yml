@@ -1,0 +1,36 @@
+version: '3.8'
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    environment:
+      SA_PASSWORD: "YourStrong!Passw0rd"
+      ACCEPT_EULA: "Y"
+    ports:
+      - "1433:1433"
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "YourStrong!Passw0rd", "-Q", "SELECT 1"]
+      interval: 10s
+      retries: 10
+
+  api:
+    build: ./api
+    environment:
+      DB_HOST: mssql
+      DB_NAME: OpsGraph
+      DB_USER: sa
+      DB_PASS: YourStrong!Passw0rd
+      JWT_SECRET: supersecret
+    ports:
+      - "3000:3000"
+    depends_on:
+      mssql:
+        condition: service_healthy
+
+  worker:
+    build: ./worker
+    environment:
+      DB_DSN: "DRIVER={ODBC Driver 18 for SQL Server};SERVER=mssql;DATABASE=OpsGraph;UID=sa;PWD=YourStrong!Passw0rd"
+      WEBHOOK_URL: "http://api:3000/sse/outbox"
+    depends_on:
+      - mssql
+      - api
