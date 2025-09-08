@@ -1,5 +1,0 @@
-{
-  "dependencies": {
-    "opsgraph-api": "file:.."
-  }
-}

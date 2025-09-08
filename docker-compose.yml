@@ -34,3 +34,14 @@ services:
     depends_on:
       - mssql
       - api
+
+  alert-poller:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile.alert_poller
+    environment:
+      DB_DSN: "DRIVER={ODBC Driver 18 for SQL Server};SERVER=mssql;DATABASE=OpsGraph;UID=sa;PWD=YourStrong!Passw0rd"
+      MONITOR_POLL_INTERVAL: "60"
+    depends_on:
+      - mssql
+    restart: unless-stopped

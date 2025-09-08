@@ -71,6 +71,16 @@ CREATE TABLE app.Vendors (
 );
 GO
 
+-- Categories (ticket taxonomy)
+IF OBJECT_ID('app.Categories','U') IS NULL
+CREATE TABLE app.Categories (
+    category_id INT IDENTITY(1,1) PRIMARY KEY,
+    name NVARCHAR(100) NOT NULL UNIQUE,
+    slug NVARCHAR(100) NOT NULL UNIQUE,
+    domain NVARCHAR(60) NULL
+);
+GO
+
 -- Sites, Zones, Assets
 IF OBJECT_ID('app.Sites','U') IS NULL
 CREATE TABLE app.Sites (

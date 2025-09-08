@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "OpsGraph Mobile",
+    "slug": "opsgraph-mobile",
+    "version": "1.0.0",
+    "sdkVersion": "49.0.0",
+    "platforms": ["ios", "android", "web"],
+    "extra": {
+      "apiBaseUrl": "@env:EXPO_PUBLIC_API_BASE_URL",
+      "sseEnabled": "@env:EXPO_PUBLIC_SSE_ENABLED"
+    }
+  }
+}

@@ -6,11 +6,14 @@ import fastifyCors from '@fastify/cors';
 import fastifyRateLimit from '@fastify/rate-limit';
 import pino from 'pino';
 import { z } from 'zod';
-import { sqlPool, withRls } from './sql';
+import sql from 'mssql';
+import { attachSqlConnection, SQL_CONN_SYMBOL, RequestWithSql } from './db/sql';
 import { registerTicketRoutes } from './routes/tickets';
 import { registerAlertRoutes } from './routes/alerts';
 import { registerKgRoutes } from './routes/kg';
 import { registerSseRoutes } from './routes/sse';
+import sessionContext from './plugins/sessionContext';
+import { registerAttachmentRoutes } from './routes/attachments';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
@@ -69,19 +72,28 @@ server.decorate('authenticate', async function (request: FastifyRequest, reply: 
   }
 });
 
+// Create and reuse a global connection pool
+const pool = new sql.ConnectionPool(process.env.DB_CONNECTION_STRING!);
+
 // RLS: set SESSION_CONTEXT('user_id') per request
-server.addHook('preHandler', async (request, reply) => {
-  if (request.user?.sub) {
-    try {
-      // This seems to create a new connection with RLS context.
-      // Ensure `withRls` handles connection pooling correctly.
-      await withRls(request.user.sub, async (conn) => {
-        request.sqlConn = conn;
-      });
-    } catch (error) {
-      server.log.error({ error, userId: request.user.sub }, 'Failed to set RLS context');
-      reply.code(500).send({ error: 'Internal Server Error' });
-    }
+server.addHook('preHandler', async (request: RequestWithSql, reply) => {
+  const user = request.user as { sub?: number };
+  const userId = user?.sub;
+  
+  try {
+    await attachSqlConnection(request, pool, userId);
+  } catch (error) {
+    server.log.error({ error, userId }, 'Failed to set RLS context');
+    reply.code(500).send({ error: 'Internal Server Error' });
+    return reply;
+  }
+});
+
+// Clean up SQL resources after request
+server.addHook('onResponse', async (request: RequestWithSql) => {
+  const conn = request[SQL_CONN_SYMBOL];
+  if (conn) {
+    conn.release();
   }
 });
 
@@ -90,6 +102,7 @@ server.register(registerTicketRoutes, { prefix: '/api' });
 server.register(registerAlertRoutes, { prefix: '/api' });
 server.register(registerKgRoutes, { prefix: '/api' });
 server.register(registerSseRoutes, { prefix: '/api' });
+server.register(registerAttachmentRoutes, { prefix: '/api' });
 
 server.get('/health', async () => ({ status: 'ok' }));
 
