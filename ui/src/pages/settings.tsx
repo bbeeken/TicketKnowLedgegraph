@@ -29,7 +29,7 @@ const SettingsPage: FC = () => {
   const [error, setError] = useState<string | null>(null);
   
   const [profileData, setProfileData] = useState({
-    full_name: user?.full_name || '',
+    full_name: user?.profile?.full_name || '',
     email: user?.email || '',
   });
 
@@ -127,7 +127,7 @@ const SettingsPage: FC = () => {
                   </Text>
                 </Box>
                 <VStack spacing={1} align="end">
-                  <Badge colorScheme="blue">{user?.auth_provider}</Badge>
+                  <Badge colorScheme="blue">{user?.profile?.auth_provider}</Badge>
                   <Badge colorScheme={user?.profile?.role === 'admin' ? 'purple' : 'green'}>
                     {user?.profile?.role?.toUpperCase()}
                   </Badge>
@@ -151,9 +151,9 @@ const SettingsPage: FC = () => {
                     value={profileData.email}
                     onChange={(e) => setProfileData({ ...profileData, email: e.target.value })}
                     placeholder="Enter your email"
-                    isDisabled={user?.auth_provider === 'microsoft'}
+                    isDisabled={user?.profile?.auth_provider === 'microsoft'}
                   />
-                  {user?.auth_provider === 'microsoft' && (
+                  {user?.profile?.auth_provider === 'microsoft' && (
                     <Text fontSize="xs" color="gray.500" mt={1}>
                       Email cannot be changed for Microsoft accounts
                     </Text>
@@ -174,7 +174,7 @@ const SettingsPage: FC = () => {
           </Card>
 
           {/* Password Change (Local accounts only) */}
-          {user?.auth_provider === 'local' && (
+          {user?.profile?.auth_provider === 'local' && (
             <Card bg={cardBg} borderColor={borderColor} borderWidth="1px">
               <CardHeader>
                 <Text fontSize="lg" fontWeight="semibold">Change Password</Text>
@@ -242,7 +242,7 @@ const SettingsPage: FC = () => {
                 <Divider />
                 <HStack justify="space-between">
                   <Text color="gray.600">Authentication Provider</Text>
-                  <Badge colorScheme="blue">{user?.auth_provider}</Badge>
+                  <Badge colorScheme="blue">{user?.profile?.auth_provider}</Badge>
                 </HStack>
                 <Divider />
                 <HStack justify="space-between">
