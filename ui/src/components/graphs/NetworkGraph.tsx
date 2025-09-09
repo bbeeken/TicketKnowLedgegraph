@@ -5,7 +5,10 @@ import ReactFlow, {
   Edge,
   Controls,
   Background,
-  ReactFlowProvider
+  ReactFlowProvider,
+  NodeProps,
+  Handle,
+  Position
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import dagre from 'dagre';
@@ -18,12 +21,45 @@ interface Props {
   onEdgeClick?: (edge: Edge) => void;
 }
 
-// Node types and their corresponding styles
+// Custom node components
+const SiteNode: FC<NodeProps> = ({ data }) => (
+  <div style={{ background: '#4299E1', color: 'white', padding: '10px', borderRadius: '5px' }}>
+    <Handle type="target" position={Position.Top} />
+    {data.label}
+    <Handle type="source" position={Position.Bottom} />
+  </div>
+);
+
+const AssetNode: FC<NodeProps> = ({ data }) => (
+  <div style={{ background: '#48BB78', color: 'white', padding: '10px', borderRadius: '5px' }}>
+    <Handle type="target" position={Position.Top} />
+    {data.label}
+    <Handle type="source" position={Position.Bottom} />
+  </div>
+);
+
+const AlertNode: FC<NodeProps> = ({ data }) => (
+  <div style={{ background: '#F56565', color: 'white', padding: '10px', borderRadius: '5px' }}>
+    <Handle type="target" position={Position.Top} />
+    {data.label}
+    <Handle type="source" position={Position.Bottom} />
+  </div>
+);
+
+const TicketNode: FC<NodeProps> = ({ data }) => (
+  <div style={{ background: '#9F7AEA', color: 'white', padding: '10px', borderRadius: '5px' }}>
+    <Handle type="target" position={Position.Top} />
+    {data.label}
+    <Handle type="source" position={Position.Bottom} />
+  </div>
+);
+
+// Node types mapping
 const nodeTypes = {
-  site: { style: { background: '#4299E1', color: 'white' } },
-  asset: { style: { background: '#48BB78', color: 'white' } },
-  alert: { style: { background: '#F56565', color: 'white' } },
-  ticket: { style: { background: '#9F7AEA', color: 'white' } }
+  site: SiteNode,
+  asset: AssetNode,
+  alert: AlertNode,
+  ticket: TicketNode
 };
 
 const NetworkGraph: FC<Props> = ({

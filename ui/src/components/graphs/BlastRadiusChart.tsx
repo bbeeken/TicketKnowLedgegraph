@@ -66,7 +66,17 @@ const BlastRadiusChart: FC<Props> = ({ nodeId, type }) => {
 // Helper function to transform graph data to tree format
 function transformToTreeData(graphData: any) {
   const { nodes, edges } = graphData;
-  const nodesMap = new Map(nodes.map((n: any) => [n.id, { ...n, children: [] }]));
+  
+  // Create nodes with children array
+  interface TreeNode {
+    id: any;
+    name: any;
+    value?: any;
+    children: TreeNode[];
+    [key: string]: any;
+  }
+  
+  const nodesMap = new Map<any, TreeNode>(nodes.map((n: any) => [n.id, { ...n, children: [] } as TreeNode]));
   
   edges.forEach((e: any) => {
     const source = nodesMap.get(e.source);

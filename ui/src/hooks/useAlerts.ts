@@ -2,6 +2,7 @@ import { z } from 'zod';
 import useSWR from 'swr';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Alert, AlertFilters } from '@/lib/api/alerts';
+import { getAlerts, getAlert, acknowledgeAlert, resolveAlert } from '@/lib/api/alerts';
 import useStore from '@/lib/store';
 
 export const useAlerts = (filters: AlertFilters = {}) => {

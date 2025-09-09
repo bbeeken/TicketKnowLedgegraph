@@ -1,7 +1,21 @@
 {
   "/_app": "pages/_app.js",
   "/_error": "pages/_error.js",
+  "/admin": "pages/admin.html",
+  "/api/auth/local/signin": "pages/api/auth/local/signin.js",
+  "/api/auth/microsoft/callback": "pages/api/auth/microsoft/callback.js",
+  "/api/auth/admin/create-user": "pages/api/auth/admin/create-user.js",
+  "/api/auth/signout": "pages/api/auth/signout.js",
+  "/assets/[id]": "pages/assets/[id].html",
+  "/dashboard": "pages/dashboard.html",
+  "/assets": "pages/assets.html",
+  "/": "pages/index.html",
+  "/assets/analytics": "pages/assets/analytics.html",
+  "/auth/callback/microsoft": "pages/auth/callback/microsoft.html",
+  "/logout": "pages/logout.html",
+  "/login": "pages/login.html",
+  "/settings": "pages/settings.html",
+  "/tickets": "pages/tickets.html",
   "/_document": "pages/_document.js",
-  "/dashboard": "pages/dashboard.js",
-  "/assets": "pages/assets.js"
+  "/404": "pages/404.html"
 }

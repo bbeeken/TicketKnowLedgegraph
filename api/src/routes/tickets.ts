@@ -1,6 +1,8 @@
-import { FastifyInstance, FastifyReply } from 'fastify';
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { RequestWithSql, getSqlConnection } from '../db/sql';
+import { getRequestFromContext } from '../middleware/rls';
+import { withRls } from '../sql';
 
 // Extend FastifyJWT types
 declare module '@fastify/jwt' {

@@ -30,7 +30,7 @@ export type LoginMethod = 'microsoft' | 'local';
 const MICROSOFT_CONFIG = {
   clientId: process.env.NEXT_PUBLIC_AZURE_CLIENT_ID || '',
   tenantId: process.env.NEXT_PUBLIC_AZURE_TENANT_ID || 'common',
-  redirectUri: process.env.NEXT_PUBLIC_AZURE_REDIRECT_URI || `${window?.location?.origin}/auth/callback/microsoft`,
+  redirectUri: process.env.NEXT_PUBLIC_AZURE_REDIRECT_URI || (typeof window !== 'undefined' ? `${window.location.origin}/auth/callback/microsoft` : ''),
   scopes: ['openid', 'profile', 'email', 'User.Read'],
 };
 
