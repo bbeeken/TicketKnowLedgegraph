@@ -50,13 +50,10 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
         const localReq = getRequestFromContext(request);
         let res: any;
         const sql = `SELECT t.ticket_id, t.ticket_no, t.status, t.substatus_code, t.severity, t.category_id, t.summary, t.description, t.site_id, t.assignee_user_id, t.team_id, t.vendor_id, t.due_at, t.sla_plan_id, t.created_at, t.updated_at, CAST(t.rowversion AS varbinary(8)) as rowversion_bin FROM app.TicketMaster t WHERE t.ticket_id = @id`;
-        if (localReq) {
-          res = await localReq.input('id', params.data.id).query(sql);
-        } else {
-          res = await withRls(userId, async (conn) => {
-            return conn.request().input('id', params.data.id).query(sql);
-          });
-        }
+        
+        res = await withRls(userId, async (conn) => {
+          return conn.request().input('id', params.data.id).query(sql);
+        });
 
         const row = res.recordset[0];
         if (!row) return reply.code(404).send({ error: 'Ticket not found' });
@@ -126,26 +123,15 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
           ...parsed.data,
           created_by: parsed.data.created_by || Number(userId),
         };
-        const localReq = getRequestFromContext(request);
-        if (localReq) {
-          const req = localReq;
-          req.input('payload', JSON.stringify(payload));
-          const res = await req.execute('app.usp_CreateOrUpdateTicket_v2');
-          const out =
-            res.recordset && res.recordset[0]
-              ? res.recordset[0].ticket_id
-              : null;
-          return reply.code(201).send({ ticket_id: out });
-        }
+        
         const out = await withRls(userId, async (conn) => {
           const r = await conn
             .request()
             .input('payload', JSON.stringify(payload))
             .execute('app.usp_CreateOrUpdateTicket_v2');
-          return r.recordset && r.recordset[0]
-            ? r.recordset[0].ticket_id
-            : null;
+          return r.recordset && r.recordset[0] ? r.recordset[0].ticket_id : null;
         });
+        
         return reply.code(201).send({ ticket_id: out });
       } catch (err: any) {
         fastify.log.error({ err }, 'Failed to create ticket');
@@ -184,42 +170,21 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
 
       try {
         const payload = { ticket_id: Number(params.data.id), ...(body.data) };
-        const localReq = getRequestFromContext(request);
-        if (localReq) {
-          const req = localReq;
-          req.input('payload', JSON.stringify(payload));
-          if (expectedRowversion)
-            req.input('expected_rowversion', expectedRowversion);
-          try {
-            const res = await req.execute('app.usp_CreateOrUpdateTicket_v2');
-            const out =
-              res.recordset && res.recordset[0]
-                ? res.recordset[0].ticket_id
-                : null;
-            return { ticket_id: out };
-          } catch (e: any) {
-            // SQL THROW for rowversion mismatch mapped to 412
-            if (e && e.message && e.message.indexOf('Rowversion mismatch') !== -1)
-              return reply.code(412).send({ error: 'Rowversion mismatch' });
-            throw e;
-          }
-        }
-
+        
         try {
           const out = await withRls(userId, async (conn) => {
             const r = conn.request().input('payload', JSON.stringify(payload));
             if (expectedRowversion)
               r.input('expected_rowversion', expectedRowversion);
             const rr = await r.execute('app.usp_CreateOrUpdateTicket_v2');
-            return rr.recordset && rr.recordset[0]
-              ? rr.recordset[0].ticket_id
-              : null;
+            return rr.recordset && rr.recordset[0] ? rr.recordset[0].ticket_id : null;
           });
           return { ticket_id: out };
-        } catch (err: any) {
-          if (err && err.message && err.message.indexOf('Rowversion mismatch') !== -1)
+        } catch (e: any) {
+          // SQL THROW for rowversion mismatch mapped to 412
+          if (e && e.message && e.message.indexOf('Rowversion mismatch') !== -1)
             return reply.code(412).send({ error: 'Rowversion mismatch' });
-          throw err;
+          throw e;
         }
       } catch (err: any) {
         fastify.log.error({ err }, 'Failed to update ticket');

@@ -1,0 +1,1 @@
+{"version":3,"file":"tickets.d.ts","sourceRoot":"","sources":["../../src/routes/tickets.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,eAAe,EAAgC,MAAM,SAAS,CAAC;AAOxE,OAAO,QAAQ,cAAc,CAAC;IAC5B,UAAU,UAAU;QAClB,IAAI,EAAE;YAAE,GAAG,EAAE,MAAM,CAAA;SAAE,CAAA;KACtB;CACF;AAMD,wBAAsB,oBAAoB,CAAC,OAAO,EAAE,eAAe,iBAoNlE"}

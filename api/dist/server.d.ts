@@ -1,0 +1,4 @@
+import pino from 'pino';
+declare const server: import("fastify").FastifyInstance<import("http").Server<typeof import("http").IncomingMessage, typeof import("http").ServerResponse>, import("http").IncomingMessage, import("http").ServerResponse<import("http").IncomingMessage>, pino.Logger<never, boolean>, import("fastify").FastifyTypeProviderDefault> & PromiseLike<import("fastify").FastifyInstance<import("http").Server<typeof import("http").IncomingMessage, typeof import("http").ServerResponse>, import("http").IncomingMessage, import("http").ServerResponse<import("http").IncomingMessage>, pino.Logger<never, boolean>, import("fastify").FastifyTypeProviderDefault>>;
+export default server;
+//# sourceMappingURL=server.d.ts.map
