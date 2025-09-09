@@ -261,7 +261,7 @@ const SettingsPage: FC = () => {
           </Card>
         </VStack>
       </Container>
-    </Layout>
+    </DashboardLayout>
   );
 };
 
