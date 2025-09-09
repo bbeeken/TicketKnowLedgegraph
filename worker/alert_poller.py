@@ -2,12 +2,262 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+import hashlib
+import numpy as np
+from typing import Dict, List, Optional
 import aiohttp
 import aioodbc
 import structlog
-from typing import Dict, List, Optional
+from sklearn.base import BaseEstimator
+from sklearn.ensemble import RandomForestClassifier
+import joblib
 
 logger = structlog.get_logger()
+
+class MonitoringManager:
+    def __init__(self, db_conn_str: str):
+        self.db_conn_str = db_conn_str
+        self.source_metrics = {}
+        
+    async def record_poll_attempt(self, source_id: int, success: bool, 
+                                response_time_ms: Optional[int] = None, 
+                                error_msg: Optional[str] = None):
+        now = datetime.now(timezone.utc)
+        metrics = self.source_metrics.setdefault(source_id, {
+            'error_count': 0,
+            'last_success': None,
+            'avg_response_time': None
+        })
+        
+        if success:
+            metrics['last_success'] = now
+            if response_time_ms:
+                if metrics['avg_response_time'] is None:
+                    metrics['avg_response_time'] = response_time_ms
+                else:
+                    metrics['avg_response_time'] = (
+                        0.9 * metrics['avg_response_time'] + 0.1 * response_time_ms
+                    )
+            metrics['error_count'] = 0
+        else:
+            metrics['error_count'] += 1
+            
+        # Update database
+        async with aioodbc.connect(self.db_conn_str) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    UPDATE app.MonitorSources 
+                    SET last_error_at = CASE WHEN ? = 0 THEN SYSUTCDATETIME() ELSE last_error_at END,
+                        error_count = ?,
+                        health_status = CASE 
+                            WHEN ? = 1 THEN 'Healthy'
+                            WHEN ? >= 3 THEN 'Failed'
+                            ELSE 'Degraded'
+                        END,
+                        last_successful_poll_at = CASE WHEN ? = 1 THEN SYSUTCDATETIME() ELSE last_successful_poll_at END,
+                        avg_response_time_ms = ?
+                    WHERE source_id = ?
+                """, (
+                    success, 
+                    metrics['error_count'],
+                    success,
+                    metrics['error_count'],
+                    success,
+                    metrics['avg_response_time'],
+                    source_id
+                ))
+                await conn.commit()
+
+class AlertProcessor:
+    def __init__(self, db_conn_str: str):
+        self.db_conn_str = db_conn_str
+        
+    def compute_alert_hash(self, alert: Dict) -> bytes:
+        """Compute deterministic hash for alert deduplication"""
+        key_fields = [
+            str(alert.get('source_id')),
+            str(alert.get('external_asset_id')),
+            alert.get('alert_type', ''),
+            alert.get('message', '')
+        ]
+        return hashlib.sha256('|'.join(key_fields).encode()).digest()
+        
+    async def check_throttling(self, source_id: int, alert_type: str) -> bool:
+        """Check if alert should be throttled"""
+        async with aioodbc.connect(self.db_conn_str) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "EXEC app.usp_CheckAlertThrottling @SourceId=?, @AlertType=?",
+                    (source_id, alert_type)
+                )
+                result = await cursor.fetchone()
+                return bool(result[0]) if result else False
+                
+    async def check_duplication(self, source_id: int, alert_type: str, 
+                              payload: str, hash_signature: bytes) -> bool:
+        """Check if alert is a duplicate"""
+        async with aioodbc.connect(self.db_conn_str) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "EXEC app.usp_CheckAlertDuplication @SourceId=?, @AlertType=?, @Payload=?, @HashSignature=?",
+                    (source_id, alert_type, payload, hash_signature)
+                )
+                result = await cursor.fetchone()
+                return bool(result[0]) if result else False
+
+    async def process_alert(self, alert: Dict) -> bool:
+        """Process a single alert with throttling and deduplication"""
+        hash_sig = self.compute_alert_hash(alert)
+        
+        # Check throttling
+        if await self.check_throttling(alert['source_id'], alert['alert_type']):
+            logger.warning("Alert throttled", 
+                         source_id=alert['source_id'],
+                         alert_type=alert['alert_type'])
+            return False
+            
+        # Check duplication
+        if await self.check_duplication(
+            alert['source_id'], 
+            alert['alert_type'],
+            json.dumps(alert),
+            hash_sig
+        ):
+            logger.info("Duplicate alert detected",
+                       source_id=alert['source_id'],
+                       alert_type=alert['alert_type'])
+            return False
+            
+        # Process alert
+        async with aioodbc.connect(self.db_conn_str) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    INSERT INTO app.AlertQueue (
+                        source_id, external_id, external_asset_id,
+                        alert_type, severity, message, raw_data,
+                        hash_signature
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    alert['source_id'],
+                    alert['external_id'],
+                    alert['external_asset_id'],
+                    alert['alert_type'],
+                    alert['severity'],
+                    alert['message'],
+                    json.dumps(alert),
+                    hash_sig
+                ))
+                await conn.commit()
+                return True
+
+class MaintenancePredictor:
+    def __init__(self, db_conn_str: str):
+        self.db_conn_str = db_conn_str
+        self.models: Dict[str, BaseEstimator] = {}
+        
+    async def load_active_models(self):
+        """Load all active ML models"""
+        async with aioodbc.connect(self.db_conn_str) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT model_id, asset_type, model_artifacts_path
+                    FROM app.MaintenanceModels m
+                    JOIN app.ModelDeployments d ON m.model_id = d.model_id
+                    WHERE m.is_active = 1
+                    AND d.deployment_status = 'Active'
+                """)
+                models = await cursor.fetchall()
+                
+                for model_id, asset_type, artifacts_path in models:
+                    try:
+                        self.models[asset_type] = joblib.load(artifacts_path)
+                        logger.info(f"Loaded model for {asset_type}")
+                    except Exception as e:
+                        logger.error(f"Error loading model for {asset_type}: {str(e)}")
+                        
+    async def predict_maintenance(self, asset_id: int, features: Dict) -> Optional[Dict]:
+        """Generate maintenance prediction for an asset"""
+        async with aioodbc.connect(self.db_conn_str) as conn:
+            async with conn.cursor() as cursor:
+                # Get asset type
+                await cursor.execute(
+                    "SELECT type FROM app.Assets WHERE asset_id = ?",
+                    (asset_id,)
+                )
+                result = await cursor.fetchone()
+                if not result:
+                    return None
+                    
+                asset_type = result[0]
+                if asset_type not in self.models:
+                    return None
+                    
+                # Generate prediction
+                model = self.models[asset_type]
+                feature_vector = self._prepare_features(features)
+                prediction = model.predict_proba([feature_vector])[0]
+                confidence = float(max(prediction))
+                
+                if confidence >= 0.7:  # Configurable threshold
+                    feature_importance = self._get_feature_importance(
+                        model, features, prediction
+                    )
+                    
+                    # Record prediction
+                    await cursor.execute("""
+                        INSERT INTO app.MaintenancePredictions (
+                            asset_id, predicted_failure_at,
+                            confidence_score, feature_importance,
+                            prediction_explanation
+                        ) VALUES (?, DATEADD(DAY, 7, SYSUTCDATETIME()),
+                                ?, ?, ?)
+                    """, (
+                        asset_id,
+                        confidence * 100,
+                        json.dumps(feature_importance),
+                        self._generate_explanation(feature_importance)
+                    ))
+                    await conn.commit()
+                    
+                    return {
+                        'asset_id': asset_id,
+                        'confidence': confidence,
+                        'features': feature_importance,
+                        'prediction_window': '7 days'
+                    }
+                
+        return None
+        
+    def _prepare_features(self, features: Dict) -> np.ndarray:
+        """Prepare feature vector for model input"""
+        # Implementation depends on feature engineering pipeline
+        pass
+        
+    def _get_feature_importance(self, model: BaseEstimator, 
+                              features: Dict, prediction: np.ndarray) -> Dict:
+        """Calculate feature importance for the prediction"""
+        if hasattr(model, 'feature_importances_'):
+            importances = model.feature_importances_
+            return {
+                name: float(imp) 
+                for name, imp in zip(features.keys(), importances)
+            }
+        return {}
+        
+    def _generate_explanation(self, feature_importance: Dict) -> str:
+        """Generate human-readable explanation of prediction"""
+        top_features = sorted(
+            feature_importance.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:3]
+        
+        explanation = "Prediction based on: "
+        explanation += ", ".join(
+            f"{feature} (importance: {importance:.2f})"
+            for feature, importance in top_features
+        )
+        return explanation
 
 class AlertPoller:
     def __init__(self, db_conn_str: str):
