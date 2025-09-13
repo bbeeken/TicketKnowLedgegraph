@@ -1,28 +1,23 @@
 import { useRouter } from 'next/router';
 import { useEffect, useRef, useState } from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
-import {
-  getTicket,
-  getTicketMessages,
-  postTicketMessage,
-  patchTicketType,
+import { 
+  getTicket, 
+  getTicketMessages, 
+  postTicketMessage, 
+  patchTicketType, 
   getTicketMetadata,
   updateTicketFields,
-  getTicketWatchers,
-  addTicketWatcher,
-  removeTicketWatcher,
-  uploadTicketAttachment,
-  type TicketMetadata,
-  type TicketWatcher
+  type TicketMetadata 
 } from '@/lib/api/tickets';
-import {
-  Box,
-  Button,
-  HStack,
-  Heading,
-  Select,
-  Text,
-  VStack,
+import { 
+  Box, 
+  Button, 
+  HStack, 
+  Heading, 
+  Select, 
+  Text, 
+  VStack, 
   useToast,
   Grid,
   GridItem,
@@ -34,8 +29,11 @@ import {
   CardBody,
   Avatar,
   Flex,
+  Tag,
+  TagLabel,
   Textarea,
   Icon,
+  Stack,
   Input,
   NumberInput,
   NumberInputField,
@@ -46,7 +44,9 @@ import {
   FormControl,
   FormLabel,
   IconButton,
+  useDisclosure,
   Container,
+  AspectRatio,
   Tabs,
   TabList,
   TabPanels,
@@ -82,6 +82,7 @@ import {
   StatLabel,
   StatNumber,
   StatHelpText,
+  StatArrow,
   Tooltip,
   Center,
   Spinner,
@@ -90,7 +91,6 @@ import {
   Checkbox,
   CheckboxGroup
 } from '@chakra-ui/react';
-import { Select as ChakraSelect } from 'chakra-react-select';
 
 import {
   CheckIcon,
@@ -109,17 +109,15 @@ import {
   PlusIcon,
   ArrowPathIcon
 } from '@heroicons/react/24/outline';
-import { useAuth } from '@/components/auth/AuthProvider';
 
 export default function TicketDetailPage() {
   const router = useRouter();
-  const { user } = useAuth();
   const { id } = router.query;
   const [ticket, setTicket] = useState<any>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [metadata, setMetadata] = useState<TicketMetadata | null>(null);
-  const [editMode, setEditMode] = useState(true);
+  const [editMode, setEditMode] = useState(false);
   const [editValues, setEditValues] = useState<any>({});
   const [isLoading, setIsLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -140,13 +138,6 @@ export default function TicketDetailPage() {
 
   const [ticketType, setTicketType] = useState('user_request');
   const [formFields, setFormFields] = useState<any>({});
-  const [typeId, setTypeId] = useState<number | undefined>(undefined);
-  const [watchers, setWatchers] = useState<TicketWatcher[]>([]);
-  const [isWatching, setIsWatching] = useState<boolean>(false);
-  const [addWatcherOpen, setAddWatcherOpen] = useState<boolean>(false);
-  const [newWatcher, setNewWatcher] = useState<{ user_id?: number | null; name?: string; email?: string; watcher_type?: 'interested' | 'collaborator' | 'site_contact' | 'assignee_backup'; }>({ watcher_type: 'interested' });
-  const [siteContactUserId, setSiteContactUserId] = useState<number | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -161,15 +152,6 @@ export default function TicketDetailPage() {
         setTicket(t);
         setMessages(msgs);
         setMetadata(meta);
-        // Load watchers list
-        try {
-          const ws = await getTicketWatchers(Number(id));
-          setWatchers(ws);
-          const sc = ws.find(w => w.watcher_type === 'site_contact' && w.user_id);
-          if (sc?.user_id) setSiteContactUserId(sc.user_id);
-        } catch (e: any) {
-          console.warn('Failed to load watchers:', e?.message || e);
-        }
         setEditValues({
           summary: t.summary,
           description: t.description,
@@ -179,30 +161,11 @@ export default function TicketDetailPage() {
           status: t.status,
           substatus_code: t.substatus_code,
           severity: t.severity,
-          privacy_level: t.privacy_level,
-          contact_name: t.contact_name ?? '',
-          contact_email: t.contact_email ?? '',
-          contact_phone: t.contact_phone ?? '',
-          problem_description: t.problem_description ?? ''
+          privacy_level: t.privacy_level
         });
-        // Capture type id/name when available
-        setTypeId((t as any).type_id ?? undefined);
-
-        // Infer ticket type using metadata types where possible
-        const tn = ((t as any).type_name as string | undefined)?.toLowerCase();
-        const tid = (t as any).type_id as number | undefined;
-        const types = (meta as any)?.types as Array<{ type_id: number; type_name: string }> | undefined;
-        if (tid && types && types.length > 0) {
-          const match = types.find(x => x.type_id === tid);
-          const name = match?.type_name?.toLowerCase() || tn || '';
-          if (name.includes('order') || name.includes('purchase')) setTicketType('order_request');
-          else if (name.includes('change')) setTicketType('change_request');
-          else setTicketType('user_request');
-        } else if (tn) {
-          if (tn.includes('order') || tn.includes('purchase')) setTicketType('order_request');
-          else if (tn.includes('change')) setTicketType('change_request');
-          else setTicketType('user_request');
-        } else if (t.category_name?.toLowerCase().includes('order')) {
+        
+        // Determine ticket type based on category or other fields
+        if (t.category_name?.toLowerCase().includes('order')) {
           setTicketType('order_request');
         } else if (t.category_name?.toLowerCase().includes('change')) {
           setTicketType('change_request');
@@ -217,16 +180,6 @@ export default function TicketDetailPage() {
     })();
   }, [id, toast]);
 
-  // Helper: determine if current user is watching
-  useEffect(() => {
-    const uid = user?.id ? Number(user.id) : null;
-    if (uid) {
-      setIsWatching(watchers?.some((w) => w.user_id === uid) || false);
-    } else {
-      setIsWatching(false);
-    }
-  }, [watchers, user]);
-
   const postMessage = async () => {
     if (!newMessage.trim()) {
       toast({ status: 'warning', title: 'Please enter a message' });
@@ -235,11 +188,7 @@ export default function TicketDetailPage() {
 
     setSubmitting(true);
     try {
-      await postTicketMessage(Number(id), {
-        message_type: 'comment',
-        content_format: 'text',
-        body: newMessage
-      });
+      await postTicketMessage(Number(id), newMessage);
       const updatedMessages = await getTicketMessages(Number(id));
       setMessages(updatedMessages);
       setNewMessage('');
@@ -269,179 +218,10 @@ export default function TicketDetailPage() {
         description: 'Changes have been saved successfully',
         duration: 3000
       });
-      // If site contact was selected, add as watcher with type site_contact
-      if (siteContactUserId) {
-        try {
-          await addTicketWatcher(Number(id), { user_id: siteContactUserId, watcher_type: 'site_contact' });
-          const ws = await getTicketWatchers(Number(id));
-          setWatchers(ws);
-        } catch (e) {
-          console.warn('Failed to add site contact watcher', e);
-        } finally {
-          setSiteContactUserId(null);
-        }
-      }
     } catch (e: any) {
       toast({ status: 'error', title: 'Failed to update ticket', description: e.message });
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  const persistTicketType = async (newType: string) => {
-    // Resolve type_id using metadata.types when available; fallback to heuristic map
-    let newTypeId: number | undefined = undefined;
-    if (metadata && Array.isArray((metadata as any).types)) {
-      const types = (metadata as any).types as Array<{ type_id: number; type_name: string }>;
-      const match = types.find((t) => {
-        const name = t.type_name?.toLowerCase() || '';
-        if (newType === 'order_request') return name.includes('purchase') || name.includes('order');
-        if (newType === 'change_request') return name.includes('change');
-        return name.includes('user') || name.includes('help');
-      });
-      if (match) newTypeId = match.type_id;
-    }
-    if (!newTypeId) {
-      const map: Record<string, number> = {
-        user_request: 1,
-        order_request: 2,
-        change_request: 3
-      };
-      newTypeId = map[newType];
-    }
-    setTicketType(newType);
-    setTypeId(newTypeId);
-    if (!newTypeId) return;
-    try {
-      setSubmitting(true);
-      await patchTicketType(Number(id), newTypeId);
-      const updated = await getTicket(Number(id));
-      setTicket(updated);
-      toast({ status: 'success', title: 'Ticket type updated' });
-    } catch (e: any) {
-      toast({ status: 'error', title: 'Failed to update ticket type', description: e.message });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const saveDynamicForm = async () => {
-    // Minimal viable persistence: post a structured comment so it's auditable
-    try {
-      setSubmitting(true);
-      const summaryLines = [
-        `Ticket type: ${ticketType}${typeId ? ` (id ${typeId})` : ''}`,
-        'Form data:'
-      ];
-      for (const [k, v] of Object.entries(formFields)) {
-        summaryLines.push(`- ${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`);
-      }
-      const body = summaryLines.join('\n');
-      await postTicketMessage(Number(id), {
-        message_type: 'comment',
-        content_format: 'text',
-        body
-      });
-      const updatedMessages = await getTicketMessages(Number(id));
-      setMessages(updatedMessages);
-      toast({ status: 'success', title: 'Form saved to activity' });
-    } catch (e: any) {
-      toast({ status: 'error', title: 'Failed to save form', description: e.message });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // Watchers operations
-  const handleAddWatcher = async () => {
-    try {
-      if (!newWatcher.user_id && (!newWatcher.email || !newWatcher.name)) {
-        toast({ status: 'warning', title: 'Provide a user or name+email' });
-        return;
-      }
-      setSubmitting(true);
-      await addTicketWatcher(Number(id), {
-        user_id: newWatcher.user_id ?? null,
-        name: newWatcher.name || null,
-        email: newWatcher.email || null,
-        watcher_type: newWatcher.watcher_type || 'interested'
-      });
-      const ws = await getTicketWatchers(Number(id));
-      setWatchers(ws);
-      setAddWatcherOpen(false);
-      setNewWatcher({ watcher_type: 'interested' });
-      toast({ status: 'success', title: 'Watcher added' });
-    } catch (e: any) {
-      toast({ status: 'error', title: 'Failed to add watcher', description: e.message });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleRemoveWatcher = async (watcherId: number) => {
-    try {
-      setSubmitting(true);
-      await removeTicketWatcher(Number(id), watcherId);
-      const ws = await getTicketWatchers(Number(id));
-      setWatchers(ws);
-      toast({ status: 'success', title: 'Watcher removed' });
-    } catch (e: any) {
-      toast({ status: 'error', title: 'Failed to remove watcher', description: e.message });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleWatchToggle = async () => {
-    try {
-      if (!user?.id) {
-        toast({ status: 'info', title: 'Login required', description: 'Sign in to watch this ticket.' });
-        return;
-      }
-      setSubmitting(true);
-      const uid = Number(user.id);
-      if (isWatching) {
-        const me = watchers.find((w) => w.user_id === uid);
-        if (me) {
-          await removeTicketWatcher(Number(id), me.watcher_id);
-          const ws = await getTicketWatchers(Number(id));
-          setWatchers(ws);
-          toast({ status: 'success', title: 'Stopped watching' });
-        }
-      } else {
-        await addTicketWatcher(Number(id), { user_id: uid, watcher_type: 'interested' });
-        const ws = await getTicketWatchers(Number(id));
-        setWatchers(ws);
-        toast({ status: 'success', title: 'Now watching this ticket' });
-      }
-    } catch (e: any) {
-      toast({ status: 'error', title: 'Watch action failed', description: e.message });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // Attachments operations
-  const handleAddAttachmentClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      setSubmitting(true);
-      await uploadTicketAttachment(Number(id), file);
-      toast({ status: 'success', title: 'Attachment uploaded' });
-      // Optional: post a message entry for the upload
-      await postTicketMessage(Number(id), { message_type: 'system', content_format: 'text', body: `Attachment uploaded: ${file.name}` });
-      const updatedMessages = await getTicketMessages(Number(id));
-      setMessages(updatedMessages);
-    } catch (e: any) {
-      toast({ status: 'error', title: 'Upload failed', description: e.message });
-    } finally {
-      setSubmitting(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -486,25 +266,6 @@ export default function TicketDetailPage() {
       case 'resolved': return 'green';
       case 'closed': return 'gray';
       default: return 'gray';
-    }
-  };
-
-  // Resolve a friendly ticket type name using server data when available
-  const getFriendlyTypeName = (): string | undefined => {
-    // Prefer server-provided name
-    const tn = (ticket as any)?.type_name as string | undefined;
-    if (tn && tn.trim().length > 0) return tn;
-    // Try to resolve from metadata by typeId
-    if (typeId && metadata && Array.isArray((metadata as any).types)) {
-      const match = (metadata as any).types.find((t: any) => t.type_id === typeId);
-      if (match?.type_name) return match.type_name as string;
-    }
-    // Fallback to label based on current selection
-    switch (ticketType) {
-      case 'order_request': return 'Order Request';
-      case 'change_request': return 'Change Request';
-      case 'user_request': return 'User Request';
-      default: return undefined;
     }
   };
 
@@ -852,18 +613,6 @@ export default function TicketDetailPage() {
                     >
                       {getSeverityLabel(ticket.severity)} Priority
                     </Badge>
-                    {getFriendlyTypeName() && (
-                      <Badge 
-                        colorScheme="purple" 
-                        variant="subtle" 
-                        px={3} 
-                        py={1} 
-                        borderRadius="full"
-                        fontSize="sm"
-                      >
-                        {getFriendlyTypeName()}
-                      </Badge>
-                    )}
                   </HStack>
                   <Text fontSize="xl" fontWeight="semibold" opacity={0.9}>
                     {ticket.summary}
@@ -871,7 +620,7 @@ export default function TicketDetailPage() {
                   <HStack spacing={4} fontSize="sm" opacity={0.8}>
                     <HStack>
                       <Icon as={UserIcon} />
-                      <Text>Created by {ticket.created_by_name || 'Unknown'}</Text>
+                      <Text>Created by {ticket.creator_name || 'Unknown'}</Text>
                     </HStack>
                     <HStack>
                       <Icon as={CalendarIcon} />
@@ -902,17 +651,16 @@ export default function TicketDetailPage() {
                         <Icon as={PencilIcon} mr={2} />
                         {editMode ? 'Cancel Edit' : 'Edit Ticket'}
                       </MenuItem>
-                      <MenuItem onClick={() => setAddWatcherOpen(true)}>
+                      <MenuItem>
                         <Icon as={EyeIcon} mr={2} />
                         Add Watcher
                       </MenuItem>
-                      <MenuItem onClick={handleAddAttachmentClick}>
+                      <MenuItem>
                         <Icon as={PaperClipIcon} mr={2} />
                         Add Attachment
                       </MenuItem>
                     </MenuList>
                   </Menu>
-                  <input ref={fileInputRef} type="file" hidden onChange={handleFileSelected} />
                   
                   <Box w="200px">
                     <Text fontSize="xs" opacity={0.8} mb={1}>Progress: {getStatusProgress(ticket.status)}%</Text>
@@ -976,218 +724,6 @@ export default function TicketDetailPage() {
                           </Card>
                         </Box>
 
-                        {/* Editable Fields */}
-                        <Box>
-                          <Heading size="md" color={textPrimary} mb={3}>
-                            Fields
-                          </Heading>
-                          <Card bg={cardBg} borderColor={borderColor}>
-                            <CardBody>
-                              <VStack spacing={4} align="stretch">
-                                <SimpleGrid columns={{ base: 1, md: 2 }} spacing={4}>
-                                  {/* Summary */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Summary</FormLabel>
-                                    {editMode ? (
-                                      <Input
-                                        value={editValues.summary || ''}
-                                        onChange={(e) => setEditValues({ ...editValues, summary: e.target.value })}
-                                        placeholder="Summarize the issue"
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.summary}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Status */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Status</FormLabel>
-                                    {editMode ? (
-                                      <ChakraSelect
-                                        useBasicStyles
-                                        isSearchable
-                                        selectedOptionStyle="check"
-                                        colorScheme="blue"
-                                        value={
-                                          metadata?.statuses
-                                            .map(s => ({ label: s.status_name, value: s.status_code }))
-                                            .find(o => o.value === (editValues.status || ticket.status)) || null
-                                        }
-                                        onChange={(opt: any) => setEditValues({ ...editValues, status: opt?.value })}
-                                        options={metadata?.statuses.map(s => ({ label: s.status_name, value: s.status_code })) || []}
-                                      />
-                                    ) : (
-                                      <Badge colorScheme={getStatusColor(ticket.status)}>{ticket.status}</Badge>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Substatus */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Substatus</FormLabel>
-                                    {editMode ? (
-                                      <ChakraSelect
-                                        useBasicStyles
-                                        isSearchable
-                                        selectedOptionStyle="check"
-                                        colorScheme="blue"
-                                        value={
-                                          metadata?.substatuses
-                                            .filter(s => s.status_code === (editValues.status || ticket.status))
-                                            .map(s => ({ label: s.substatus_name, value: s.substatus_code }))
-                                            .find(o => o.value === (editValues.substatus_code || ticket.substatus_code)) || null
-                                        }
-                                        onChange={(opt: any) => setEditValues({ ...editValues, substatus_code: opt?.value })}
-                                        options={
-                                          metadata?.substatuses
-                                            .filter(s => s.status_code === (editValues.status || ticket.status))
-                                            .map(s => ({ label: s.substatus_name, value: s.substatus_code })) || []
-                                        }
-                                        placeholder="Select substatus"
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.substatus_name || '—'}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Severity */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Severity</FormLabel>
-                                    {editMode ? (
-                                      <ChakraSelect
-                                        useBasicStyles
-                                        isSearchable
-                                        selectedOptionStyle="check"
-                                        colorScheme="blue"
-                                        value={{ label: getSeverityLabel(editValues.severity || ticket.severity), value: (editValues.severity || ticket.severity) }}
-                                        onChange={(opt: any) => setEditValues({ ...editValues, severity: Number(opt?.value) })}
-                                        options={[
-                                          { label: 'Low', value: 1 },
-                                          { label: 'Medium', value: 2 },
-                                          { label: 'High', value: 3 },
-                                          { label: 'Critical', value: 4 },
-                                          { label: 'Emergency', value: 5 }
-                                        ]}
-                                      />
-                                    ) : (
-                                      <Badge colorScheme={getSeverityColor(ticket.severity)}>{getSeverityLabel(ticket.severity)}</Badge>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Site */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Site</FormLabel>
-                                    {editMode ? (
-                                      <ChakraSelect
-                                        useBasicStyles
-                                        isSearchable
-                                        selectedOptionStyle="check"
-                                        colorScheme="blue"
-                                        value={
-                                          metadata?.sites
-                                            .map(s => ({ label: s.display_name || s.name, value: s.site_id }))
-                                            .find(o => o.value === (editValues.site_id || ticket.site_id)) || null
-                                        }
-                                        onChange={(opt: any) => setEditValues({ ...editValues, site_id: Number(opt?.value) })}
-                                        options={metadata?.sites.map(s => ({ label: s.display_name || s.name, value: s.site_id })) || []}
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.site_name}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Category moved to sidebar */}
-
-                                  {/* Assigned To moved to sidebar */}
-
-                                  {/* Privacy moved to sidebar */}
-
-                                  {/* Site Contact (adds watcher) */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Site Contact</FormLabel>
-                                    {editMode ? (
-                                      <ChakraSelect
-                                        useBasicStyles
-                                        isSearchable
-                                        selectedOptionStyle="check"
-                                        colorScheme="blue"
-                                        value={
-                                          siteContactUserId
-                                            ? metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })).find(o => o.value === siteContactUserId) || null
-                                            : null
-                                        }
-                                        onChange={(opt: any) => setSiteContactUserId(opt ? Number(opt.value) : null)}
-                                        options={metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })) || []}
-                                        placeholder="Select site contact"
-                                        isClearable
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.contact_name || '—'}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Contact Name */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Contact Name</FormLabel>
-                                    {editMode ? (
-                                      <Input
-                                        value={editValues.contact_name || ''}
-                                        onChange={(e) => setEditValues({ ...editValues, contact_name: e.target.value })}
-                                        placeholder="Primary contact name"
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.contact_name || '—'}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Contact Email */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Contact Email</FormLabel>
-                                    {editMode ? (
-                                      <Input
-                                        type="email"
-                                        value={editValues.contact_email || ''}
-                                        onChange={(e) => setEditValues({ ...editValues, contact_email: e.target.value })}
-                                        placeholder="name@example.com"
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.contact_email || '—'}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Contact Phone */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Contact Phone</FormLabel>
-                                    {editMode ? (
-                                      <Input
-                                        value={editValues.contact_phone || ''}
-                                        onChange={(e) => setEditValues({ ...editValues, contact_phone: e.target.value })}
-                                        placeholder="(555) 555-5555"
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.contact_phone || '—'}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Problem Description */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Problem Description</FormLabel>
-                                    {editMode ? (
-                                      <Textarea
-                                        value={editValues.problem_description || ''}
-                                        onChange={(e) => setEditValues({ ...editValues, problem_description: e.target.value })}
-                                        placeholder="More detailed problem context"
-                                        rows={4}
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary} whiteSpace="pre-wrap">{ticket.problem_description || '—'}</Text>
-                                    )}
-                                  </FormControl>
-                                </SimpleGrid>
-                              </VStack>
-                            </CardBody>
-                          </Card>
-                        </Box>
-
                         {/* Activity Feed */}
                         <Box>
                           <Heading size="md" color={textPrimary} mb={3}>
@@ -1222,7 +758,7 @@ export default function TicketDetailPage() {
                                           </Text>
                                         </HStack>
                                         <Text color={textSecondary} whiteSpace="pre-wrap">
-                                          {message.body_text || message.body}
+                                          {message.body}
                                         </Text>
                                       </Box>
                                     </Flex>
@@ -1261,7 +797,6 @@ export default function TicketDetailPage() {
                                   isLoading={submitting}
                                   loadingText="Posting..."
                                   colorScheme="blue"
-                                  variant="solid"
                                   size="md"
                                   leftIcon={<Icon as={ChatBubbleLeftRightIcon} />}
                                   _hover={{ transform: 'translateY(-1px)', shadow: 'lg' }}
@@ -1287,8 +822,8 @@ export default function TicketDetailPage() {
                           </CardHeader>
                           <CardBody>
                             <RadioGroup 
-                              value={ticketType}
-                              onChange={(val) => persistTicketType(val)}
+                              value={ticketType} 
+                              onChange={setTicketType}
                             >
                               <HStack spacing={6}>
                                 <Radio value="user_request" colorScheme="green">
@@ -1316,17 +851,6 @@ export default function TicketDetailPage() {
 
                         {/* Dynamic Form based on ticket type */}
                         {renderDynamicForm()}
-
-                        <HStack justify="flex-end">
-                          <Button
-                            onClick={saveDynamicForm}
-                            colorScheme="blue"
-                            variant="solid"
-                            isLoading={submitting}
-                          >
-                            Save Form
-                          </Button>
-                        </HStack>
                       </VStack>
                     </TabPanel>
                   </TabPanels>
@@ -1344,64 +868,19 @@ export default function TicketDetailPage() {
                 <CardBody>
                   <VStack spacing={4} align="stretch">
                     <Stat>
-                      <StatLabel color={textSecondary}>Ticket Type</StatLabel>
-                      <StatNumber fontSize="md" color={textPrimary}>
-                        {getFriendlyTypeName() || '—'}
-                      </StatNumber>
-                    </Stat>
-
-                    <Divider />
-                    
-                    <Stat>
                       <StatLabel color={textSecondary}>Assigned To</StatLabel>
-                      {editMode ? (
-                        <ChakraSelect
-                          useBasicStyles
-                          isSearchable
-                          selectedOptionStyle="check"
-                          colorScheme="blue"
-                          value={
-                            metadata?.users
-                              .map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id }))
-                              .find(o => o.value === (editValues.assignee_user_id ?? ticket.assignee_user_id ?? undefined)) || null
-                          }
-                          onChange={(opt: any) => setEditValues({ ...editValues, assignee_user_id: opt ? Number(opt.value) : null })}
-                          options={metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })) || []}
-                          placeholder="Select assignee"
-                          isClearable
-                        />
-                      ) : (
-                        <StatNumber fontSize="md" color={textPrimary}>
-                          {ticket.assignee_name || 'Unassigned'}
-                        </StatNumber>
-                      )}
+                      <StatNumber fontSize="md" color={textPrimary}>
+                        {ticket.assignee_name || 'Unassigned'}
+                      </StatNumber>
                     </Stat>
                     
                     <Divider />
                     
                     <Stat>
                       <StatLabel color={textSecondary}>Category</StatLabel>
-                      {editMode ? (
-                        <ChakraSelect
-                          useBasicStyles
-                          isSearchable
-                          selectedOptionStyle="check"
-                          colorScheme="blue"
-                          value={
-                            metadata?.categories
-                              .map(c => ({ label: c.name, value: c.category_id }))
-                              .find(o => o.value === (editValues.category_id ?? ticket.category_id ?? undefined)) || null
-                          }
-                          onChange={(opt: any) => setEditValues({ ...editValues, category_id: opt ? Number(opt.value) : null })}
-                          options={metadata?.categories.map(c => ({ label: c.name, value: c.category_id })) || []}
-                          placeholder="Select category"
-                          isClearable
-                        />
-                      ) : (
-                        <StatNumber fontSize="md" color={textPrimary}>
-                          {ticket.category_name || 'No category'}
-                        </StatNumber>
-                      )}
+                      <StatNumber fontSize="md" color={textPrimary}>
+                        {ticket.category_name || 'No category'}
+                      </StatNumber>
                     </Stat>
                     
                     <Divider />
@@ -1420,27 +899,11 @@ export default function TicketDetailPage() {
                     
                     <Stat>
                       <StatLabel color={textSecondary}>Privacy Level</StatLabel>
-                      {editMode ? (
-                        <ChakraSelect
-                          useBasicStyles
-                          isSearchable
-                          selectedOptionStyle="check"
-                          colorScheme="blue"
-                          value={{ label: (editValues.privacy_level || ticket.privacy_level || 'public'), value: (editValues.privacy_level || ticket.privacy_level || 'public') }}
-                          onChange={(opt: any) => setEditValues({ ...editValues, privacy_level: opt?.value })}
-                          options={[
-                            { label: 'public', value: 'public' },
-                            { label: 'site_only', value: 'site_only' },
-                            { label: 'private', value: 'private' },
-                          ]}
-                        />
-                      ) : (
-                        <StatNumber fontSize="md" color={textPrimary}>
-                          <Badge colorScheme={ticket.privacy_level === 'public' ? 'green' : 'orange'}>
-                            {ticket.privacy_level || 'Public'}
-                          </Badge>
-                        </StatNumber>
-                      )}
+                      <StatNumber fontSize="md" color={textPrimary}>
+                        <Badge colorScheme={ticket.privacy_level === 'public' ? 'green' : 'orange'}>
+                          {ticket.privacy_level || 'Public'}
+                        </Badge>
+                      </StatNumber>
                     </Stat>
                   </VStack>
                 </CardBody>
@@ -1459,7 +922,6 @@ export default function TicketDetailPage() {
                           onClick={saveChanges} 
                           isLoading={submitting}
                           colorScheme="green" 
-                          variant="solid"
                           size="sm"
                           leftIcon={<Icon as={CheckIcon} />}
                         >
@@ -1486,13 +948,12 @@ export default function TicketDetailPage() {
                           Edit Ticket
                         </Button>
                         <Button 
-                          colorScheme={isWatching ? 'red' : 'green'} 
+                          colorScheme="green" 
                           variant="outline" 
                           size="sm"
-                          onClick={handleWatchToggle}
                           leftIcon={<Icon as={EyeIcon} />}
                         >
-                          {isWatching ? 'Unwatch' : 'Watch Ticket'}
+                          Watch Ticket
                         </Button>
                         <Button 
                           colorScheme="orange" 
@@ -1514,83 +975,16 @@ export default function TicketDetailPage() {
                   <Heading size="sm" color={textPrimary}>Watchers</Heading>
                 </CardHeader>
                 <CardBody>
-                  <VStack spacing={3} align="stretch">
-                    {watchers && watchers.length > 0 ? (
-                      watchers.map((w) => (
-                        <Flex key={w.watcher_id} align="center" justify="space-between" borderWidth="1px" borderColor={borderColor} borderRadius="md" p={2}>
-                          <HStack>
-                            <Avatar size="xs" name={w.name || w.email || 'Watcher'} />
-                            <Box>
-                              <Text fontSize="sm" color={textPrimary}>{w.name || 'External Watcher'}</Text>
-                              <Text fontSize="xs" color={textSecondary}>{w.email || (w.user_id ? `User #${w.user_id}` : '')}</Text>
-                            </Box>
-                            <Badge colorScheme="blue">{w.watcher_type}</Badge>
-                          </HStack>
-                          <Button size="xs" variant="ghost" colorScheme="red" onClick={() => handleRemoveWatcher(w.watcher_id)}>Remove</Button>
-                        </Flex>
-                      ))
-                    ) : (
-                      <Text color={textSecondary} fontSize="sm" textAlign="center">No watchers yet</Text>
-                    )}
-                    <Button size="xs" variant="outline" colorScheme="blue" onClick={() => setAddWatcherOpen(true)}>
+                  <VStack spacing={3}>
+                    <Text color={textSecondary} fontSize="sm" textAlign="center">
+                      No watchers yet
+                    </Text>
+                    <Button size="xs" variant="outline" colorScheme="blue">
                       Add Watcher
                     </Button>
                   </VStack>
                 </CardBody>
               </Card>
-
-              {/* Add Watcher Modal */}
-              <Modal isOpen={addWatcherOpen} onClose={() => setAddWatcherOpen(false)}>
-                <ModalOverlay />
-                <ModalContent>
-                  <ModalHeader>Add Watcher</ModalHeader>
-                  <ModalCloseButton />
-                  <ModalBody pb={6}>
-                    <VStack align="stretch" spacing={4}>
-                      <Text fontSize="sm" color={textSecondary}>Select an existing user or enter name and email for an external watcher.</Text>
-                      <FormControl>
-                        <FormLabel>User (optional)</FormLabel>
-                        <ChakraSelect
-                          useBasicStyles
-                          isSearchable
-                          selectedOptionStyle="check"
-                          colorScheme="blue"
-                          value={
-                            newWatcher.user_id
-                              ? metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })).find(o => o.value === newWatcher.user_id) || null
-                              : null
-                          }
-                          onChange={(opt: any) => setNewWatcher({ ...newWatcher, user_id: opt ? Number(opt.value) : null })}
-                          options={metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })) || []}
-                          placeholder="Search users..."
-                          isClearable
-                        />
-                      </FormControl>
-                      <FormControl>
-                        <FormLabel>Name (for external)</FormLabel>
-                        <Input value={newWatcher.name || ''} onChange={(e) => setNewWatcher({ ...newWatcher, name: e.target.value })} />
-                      </FormControl>
-                      <FormControl>
-                        <FormLabel>Email (for external)</FormLabel>
-                        <Input type="email" value={newWatcher.email || ''} onChange={(e) => setNewWatcher({ ...newWatcher, email: e.target.value })} />
-                      </FormControl>
-                      <FormControl>
-                        <FormLabel>Watcher Type</FormLabel>
-                        <Select value={newWatcher.watcher_type} onChange={(e) => setNewWatcher({ ...newWatcher, watcher_type: e.target.value as any })}>
-                          <option value="interested">Interested</option>
-                          <option value="collaborator">Collaborator</option>
-                          <option value="site_contact">Site Contact</option>
-                          <option value="assignee_backup">Assignee Backup</option>
-                        </Select>
-                      </FormControl>
-                      <HStack justify="flex-end">
-                        <Button onClick={() => setAddWatcherOpen(false)} variant="ghost">Cancel</Button>
-                        <Button onClick={handleAddWatcher} colorScheme="blue" isLoading={submitting}>Add</Button>
-                      </HStack>
-                    </VStack>
-                  </ModalBody>
-                </ModalContent>
-              </Modal>
             </VStack>
           </Grid>
         </Container>

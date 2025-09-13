@@ -10,6 +10,9 @@ export const ticketSchema = z.object({
   substatus_code: z.string().nullable(),
   substatus_name: z.string().nullable(),
   severity: z.number(),
+  // Optional type fields if provided by backend
+  type_id: z.number().nullable().optional(),
+  type_name: z.string().nullable().optional(),
   category_id: z.number().nullable(),
   category_name: z.string().nullable(),
   site_id: z.number(),
@@ -84,12 +87,18 @@ export const fullSubstatusSchema = z.object({
   description: z.string().nullable()
 });
 
+export const ticketTypeSchema = z.object({
+  type_id: z.number(),
+  type_name: z.string()
+});
+
 export const ticketMetadataSchema = z.object({
   sites: z.array(siteSchema),
   categories: z.array(categorySchema),
   users: z.array(userSchema),
   statuses: z.array(statusSchema),
-  substatuses: z.array(fullSubstatusSchema)
+  substatuses: z.array(fullSubstatusSchema),
+  types: z.array(ticketTypeSchema).optional()
 });
 
 export type Site = z.infer<typeof siteSchema>;
@@ -97,7 +106,20 @@ export type Category = z.infer<typeof categorySchema>;
 export type User = z.infer<typeof userSchema>;
 export type Status = z.infer<typeof statusSchema>;
 export type FullSubstatus = z.infer<typeof fullSubstatusSchema>;
+export type TicketType = z.infer<typeof ticketTypeSchema>;
 export type TicketMetadata = z.infer<typeof ticketMetadataSchema>;
+
+// Watchers
+export const ticketWatcherSchema = z.object({
+  watcher_id: z.number(),
+  ticket_id: z.number().optional(),
+  user_id: z.number().nullable(),
+  name: z.string().nullable(),
+  email: z.string().nullable(),
+  watcher_type: z.enum(['interested','collaborator','site_contact','assignee_backup']).or(z.string()),
+  added_at: z.string().optional()
+});
+export type TicketWatcher = z.infer<typeof ticketWatcherSchema>;
 
 export interface CreateTicketPayload {
   summary: string;
@@ -127,6 +149,11 @@ export interface UpdateTicketPayload {
   description?: string;
   privacy_level?: string;
   is_private?: boolean;
+  // Contact + problem fields
+  contact_name?: string | null;
+  contact_email?: string | null;
+  contact_phone?: string | null;
+  problem_description?: string | null;
 }
 
 export interface TicketFilters {
@@ -208,4 +235,26 @@ export async function postTicketMessage(id: number, payload: any) {
 
 export async function patchTicketType(id: number, type_id: number) {
   return apiFetch(`/tickets/${id}/type`, { method: 'PATCH', body: JSON.stringify({ type_id }) });
+}
+
+// Watchers API
+export async function getTicketWatchers(ticketId: number): Promise<TicketWatcher[]> {
+  const data = await apiFetch(`/tickets/${ticketId}/watchers`);
+  return z.array(ticketWatcherSchema).parse(data);
+}
+
+export async function addTicketWatcher(ticketId: number, payload: { user_id?: number | null; email?: string | null; name?: string | null; watcher_type?: 'interested' | 'collaborator' | 'site_contact' | 'assignee_backup'; notification_preferences?: string; }) {
+  return apiFetch(`/tickets/${ticketId}/watchers`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function removeTicketWatcher(ticketId: number, watcherId: number) {
+  return apiFetch(`/tickets/${ticketId}/watchers/${watcherId}`, { method: 'DELETE' });
+}
+
+// Attachments API
+export async function uploadTicketAttachment(ticketId: number, file: File, kind: string = 'other') {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('kind', kind);
+  return apiFetch(`/tickets/${ticketId}/attachments`, { method: 'POST', body: form });
 }

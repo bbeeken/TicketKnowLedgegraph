@@ -27,9 +27,15 @@ export async function apiFetch<T = any>(input: string, init: ApiFetchOptions = {
   console.log('[apiFetch] BASE:', API_BASE_URL, 'input:', input, 'url:', url);
   
   const finalHeaders: Record<string,string> = {
-    'Content-Type': 'application/json',
+    Accept: 'application/json',
     ...(headers as any || {})
   };
+
+  // Only set JSON content type if body is not FormData
+  const bodyIsFormData = typeof FormData !== 'undefined' && (rest as any)?.body instanceof FormData;
+  if (!bodyIsFormData) {
+    finalHeaders['Content-Type'] = finalHeaders['Content-Type'] || 'application/json';
+  }
 
   if (auth && typeof window !== 'undefined') {
     const token = localStorage.getItem('opsgraph_token');

@@ -64,12 +64,20 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
             ORDER BY sort_order, substatus_name
           `);
 
+          // Get ticket types
+          const typesRes = await conn.request().query(`
+            SELECT type_id, name as type_name
+            FROM app.TicketTypes
+            ORDER BY name
+          `);
+
           return {
             sites: sitesRes.recordset,
             categories: categoriesRes.recordset,
             users: usersRes.recordset,
             statuses: statusesRes.recordset.map(s => ({ status_code: s.status_code, status_name: s.status_name, description: s.description })),
-            substatuses: substatusesRes.recordset.map(s => ({ substatus_code: s.substatus_code, substatus_name: s.substatus_name, status_code: s.status_code, description: s.description }))
+            substatuses: substatusesRes.recordset.map(s => ({ substatus_code: s.substatus_code, substatus_name: s.substatus_name, status_code: s.status_code, description: s.description })),
+            types: typesRes.recordset
           };
         });
 
@@ -188,6 +196,8 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
             tm.description,
             tm.site_id,
             s.name as site_name,
+            tm.type_id,
+            tt2.name as type_name,
             tt.privacy_level,
             tt.is_private,
             tm.assignee_user_id,
@@ -212,6 +222,7 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
           LEFT JOIN app.Sites s ON tm.site_id = s.site_id
           LEFT JOIN app.Categories c ON tm.category_id = c.category_id
           LEFT JOIN app.Substatuses st ON tm.substatus_code = st.substatus_code
+          LEFT JOIN app.TicketTypes tt2 ON tm.type_id = tt2.type_id
           LEFT JOIN app.Users au ON tm.assignee_user_id = au.user_id
           LEFT JOIN app.Users cu ON tm.created_by = cu.user_id
           WHERE tm.ticket_id = @id`;
@@ -271,6 +282,8 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
           substatus_code: row.substatus_code,
           substatus_name: row.substatus_name,
           severity: row.severity,
+          type_id: row.type_id,
+          type_name: row.type_name,
           category_id: row.category_id,
           category_name: row.category_name,
           site_id: row.site_id,
@@ -513,7 +526,7 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
 
       try {
         const localReq = getRequestFromContext(request);
-        const run = async (req: any) => {
+        const runAdd = async (req: any) => {
           req.input('ticket_id', Number(params.data.id));
           req.input('author_id', Number(userId));
           req.input('message_type', body.data.message_type);
@@ -524,10 +537,74 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
           const res = await req.execute('app.usp_AddTicketMessage');
           return res.recordset?.[0]?.comment_id ?? null;
         };
-        const commentId = localReq
-          ? await run(localReq)
-          : await withRls(userId, (conn) => run(conn.request()));
-        return reply.code(201).send({ comment_id: commentId });
+
+        const upsertStub = async (req: any) => {
+          // Strategy 1: attempt no-op upsert (may not create when only ticket_id is provided)
+          const payload = { ticket_id: Number(params.data.id) };
+          try {
+            await req.input('payload', JSON.stringify(payload)).execute('app.usp_CreateOrUpdateTicket_v2');
+          } catch (e) {
+            // ignore and try backfill path below
+          }
+
+          // Strategy 2: backfill missing app.Tickets row from app.TicketMaster (identity insert)
+          const sql = `
+            IF EXISTS (SELECT 1 FROM app.TicketMaster WHERE ticket_id=@tid)
+               AND NOT EXISTS (SELECT 1 FROM app.Tickets WHERE ticket_id=@tid)
+            BEGIN
+              SET IDENTITY_INSERT app.Tickets ON;
+              INSERT INTO app.Tickets (
+                ticket_id, external_ref, status, severity, category_id, summary, description,
+                site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id,
+                created_at, updated_at, substatus_code, type_id
+              )
+              SELECT 
+                m.ticket_id, m.external_ref, m.status, ISNULL(m.severity, 0), m.category_id, m.summary, m.description,
+                m.site_id, m.created_by, m.assignee_user_id, m.team_id, m.vendor_id, m.due_at, m.sla_plan_id,
+                m.created_at, m.updated_at, m.substatus_code, m.type_id
+              FROM app.TicketMaster m WHERE m.ticket_id = @tid;
+              SET IDENTITY_INSERT app.Tickets OFF;
+            END`;
+          try {
+            await req.input('tid', Number(params.data.id)).query(sql);
+          } catch (err: any) {
+            // Ignore duplicate PK errors if another path created the row concurrently
+            if (!(err && (err.number === 2627 || String(err.message || '').includes('PRIMARY KEY constraint')))) {
+              throw err;
+            }
+          }
+        };
+
+        const attempt = async () => {
+          if (localReq) return runAdd(localReq);
+          return withRls(userId, (conn) => runAdd(conn.request()));
+        };
+
+        try {
+          const commentId = await attempt();
+          return reply.code(201).send({ comment_id: commentId });
+        } catch (e: any) {
+          const msg = e?.message || '';
+          const isInvalidId = msg.includes('Invalid ticket_id');
+          fastify.log.warn({ err: e, ticket_id: params.data.id }, 'Add message failed, trying upsert stub if needed');
+          if (isInvalidId) {
+            try {
+              if (localReq) {
+                await upsertStub(localReq);
+              } else {
+                await withRls(userId, (conn) => upsertStub(conn.request()));
+              }
+              // Retry once after upsert
+              const commentId = await attempt();
+              return reply.code(201).send({ comment_id: commentId });
+            } catch (retryErr: any) {
+              fastify.log.error({ err: retryErr }, 'Retry after upsert failed for add message');
+              return reply.code(404).send({ error: 'Ticket not found or not eligible for comments' });
+            }
+          }
+          // Other errors
+          throw e;
+        }
       } catch (err) {
         fastify.log.error({ err }, 'Failed to add ticket message');
         return reply.code(500).send({ error: 'Failed to add ticket message' });
