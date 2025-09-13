@@ -33,18 +33,13 @@ export async function ensureBaseTestData() {
     }
   }
   else {
-    // Ensure TicketMaster table & trigger exist even if proc already existed
+    // Legacy diagnostics: verify TicketMaster is absent (we no longer create it)
     const pool2 = pool; // alias
-    const tmCheck = await pool2.request().query("SELECT CASE WHEN OBJECT_ID('app.TicketMaster','U') IS NOT NULL THEN 1 ELSE 0 END AS has_tm, CASE WHEN OBJECT_ID('app.TicketMaster_InsertFromTickets','TR') IS NOT NULL THEN 1 ELSE 0 END AS has_trg");
-    if (!tmCheck.recordset[0].has_tm || !tmCheck.recordset[0].has_trg) {
-      const root = path.resolve(__dirname, '..', '..');
-      const tmScript = path.join(root, '11_ticket_master.sql');
-      if (fs.existsSync(tmScript)) {
-        const txt = fs.readFileSync(tmScript,'utf8');
-        const parts = txt.split(/\bGO\b/gi).map(p=>p.trim()).filter(Boolean);
-        for (const part of parts) { try { await pool2.request().batch(part); } catch(e:any) { const m=(e.message||'').toLowerCase(); if (!(m.includes('already exists'))) throw e; } }
-      }
-    }
+    try {
+      const tmCheck = await pool2.request().query("SELECT CASE WHEN OBJECT_ID('app.TicketMaster','U') IS NOT NULL THEN 1 ELSE 0 END AS has_tm, CASE WHEN OBJECT_ID('app.TicketMaster_InsertFromTickets','TR') IS NOT NULL THEN 1 ELSE 0 END AS has_trg");
+      // eslint-disable-next-line no-console
+      console.log('TicketMaster presence (should be 0):', tmCheck.recordset?.[0]);
+    } catch {}
     // Always refresh definition of core ticket proc to latest (CREATE OR ALTER is idempotent)
     try {
       const root = path.resolve(__dirname, '..', '..');
@@ -65,7 +60,7 @@ export async function ensureBaseTestData() {
           try { await pool2.request().batch(part); } catch (e:any) { const m=(e.message||'').toLowerCase(); if (!(m.includes('already exists'))) throw e; }
         }
       }
-      // Log snippet of current procedure text for diagnostics
+  // Log snippet of current procedure text for diagnostics
       try {
         const def = await pool2.request().query("SELECT TOP 1 def = OBJECT_DEFINITION(OBJECT_ID('app.usp_CreateOrUpdateTicket_v2'))");
         // eslint-disable-next-line no-console

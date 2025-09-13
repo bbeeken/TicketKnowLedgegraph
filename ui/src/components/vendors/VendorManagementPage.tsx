@@ -48,6 +48,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { useRouter } from 'next/router';
 import { Vendor, VendorAsset, getVendors, getVendorAssets } from '../../lib/api/vendors';
+import { Asset, getAsset, updateAsset } from '../../lib/api/assets';
 
 const VendorManagementPage: React.FC = () => {
   const router = useRouter();
@@ -66,6 +67,10 @@ const VendorManagementPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
+  const [linkAssetId, setLinkAssetId] = useState<string>('');
+  const [linkPreview, setLinkPreview] = useState<Asset | null>(null);
+  const [linkLoading, setLinkLoading] = useState<boolean>(false);
+  const [detachLoading, setDetachLoading] = useState<Record<number, boolean>>({});
 
   const loadVendors = useCallback(async () => {
     try {
@@ -114,6 +119,8 @@ const VendorManagementPage: React.FC = () => {
   const handleViewVendor = (vendor: Vendor) => {
     setSelectedVendor(vendor);
     loadVendorAssets(vendor.vendor_id);
+    setLinkPreview(null);
+    setLinkAssetId('');
   };
 
   const handleViewAsset = (assetId: number) => {
@@ -322,6 +329,91 @@ const VendorManagementPage: React.FC = () => {
                   </CardHeader>
                 </Card>
 
+                {/* Link Asset to Vendor */}
+                <Card w="full">
+                  <CardHeader>
+                    <HStack justifyContent="space-between">
+                      <Text fontSize="lg" fontWeight="semibold">Attach Asset to {selectedVendor.name}</Text>
+                    </HStack>
+                  </CardHeader>
+                  <CardBody>
+                    <VStack align="stretch" spacing={3}>
+                      <HStack>
+                        <Input
+                          placeholder="Enter Asset ID"
+                          value={linkAssetId}
+                          onChange={(e) => setLinkAssetId(e.target.value)}
+                          maxW="200px"
+                        />
+                        <Button
+                          onClick={async () => {
+                            const id = Number(linkAssetId);
+                            if (!id) return;
+                            try {
+                              setLinkLoading(true);
+                              const a = await getAsset(id);
+                              setLinkPreview(a);
+                            } catch (err) {
+                              setLinkPreview(null);
+                              toast({ title: 'Asset not found', status: 'error' });
+                            } finally {
+                              setLinkLoading(false);
+                            }
+                          }}
+                          isLoading={linkLoading}
+                        >
+                          Preview
+                        </Button>
+                        <Button
+                          colorScheme="blue"
+                          onClick={async () => {
+                            if (!linkPreview) return;
+                            try {
+                              setLinkLoading(true);
+                              await updateAsset({
+                                asset_id: linkPreview.asset_id,
+                                site_id: linkPreview.site_id,
+                                zone_id: linkPreview.zone_id,
+                                type: linkPreview.type,
+                                model: linkPreview.model ?? undefined,
+                                vendor_id: selectedVendor.vendor_id,
+                                serial: linkPreview.serial ?? undefined,
+                                location: linkPreview.location ?? undefined,
+                                purchase_date: linkPreview.purchase_date ?? undefined,
+                                warranty_until: linkPreview.warranty_until ?? undefined,
+                              });
+                              toast({ title: 'Asset attached to vendor', status: 'success' });
+                              setLinkPreview(null);
+                              setLinkAssetId('');
+                              await loadVendorAssets(selectedVendor.vendor_id);
+                            } catch (err) {
+                              toast({ title: 'Failed to attach asset', status: 'error' });
+                            } finally {
+                              setLinkLoading(false);
+                            }
+                          }}
+                          isDisabled={!linkPreview}
+                          isLoading={linkLoading}
+                        >
+                          Attach
+                        </Button>
+                      </HStack>
+                      {linkPreview && (
+                        <Box borderWidth="1px" borderRadius="md" p={3}>
+                          <HStack justify="space-between">
+                            <VStack align="start" spacing={0}>
+                              <Text fontWeight="semibold">Asset #{linkPreview.asset_id}</Text>
+                              <Text fontSize="sm" color="gray.500">{linkPreview.type} · {linkPreview.model || '—'} · Serial {linkPreview.serial || '—'}</Text>
+                              <Text fontSize="sm" color="gray.500">Site {linkPreview.site_id} · {linkPreview.location || '—'}</Text>
+                            </VStack>
+                            <Badge>{linkPreview.vendor_name ? `Current Vendor: ${linkPreview.vendor_name}` : 'No vendor assigned'}</Badge>
+                          </HStack>
+                        </Box>
+                      )}
+                    </VStack>
+                  </CardBody>
+                </Card>
+
                 {/* Assets Table */}
                 <Card w="full">
                   <CardHeader>
@@ -389,6 +481,38 @@ const VendorManagementPage: React.FC = () => {
                                     onClick={() => handleViewAsset(asset.asset_id)}
                                   />
                                 </Tooltip>
+                                <Button
+                                  size="xs"
+                                  ml={2}
+                                  variant="outline"
+                                  onClick={async () => {
+                                    try {
+                                      setDetachLoading(prev => ({ ...prev, [asset.asset_id]: true }));
+                                      const a = await getAsset(asset.asset_id);
+                                      await updateAsset({
+                                        asset_id: a.asset_id,
+                                        site_id: a.site_id,
+                                        zone_id: a.zone_id,
+                                        type: a.type,
+                                        model: a.model ?? undefined,
+                                        vendor_id: null,
+                                        serial: a.serial ?? undefined,
+                                        location: a.location ?? undefined,
+                                        purchase_date: a.purchase_date ?? undefined,
+                                        warranty_until: a.warranty_until ?? undefined,
+                                      });
+                                      toast({ title: 'Asset detached from vendor', status: 'success' });
+                                      await loadVendorAssets(selectedVendor.vendor_id);
+                                    } catch (err) {
+                                      toast({ title: 'Failed to detach asset', status: 'error' });
+                                    } finally {
+                                      setDetachLoading(prev => ({ ...prev, [asset.asset_id]: false }));
+                                    }
+                                  }}
+                                  isLoading={detachLoading[asset.asset_id]}
+                                >
+                                  Detach
+                                </Button>
                               </Td>
                             </Tr>
                           ))}

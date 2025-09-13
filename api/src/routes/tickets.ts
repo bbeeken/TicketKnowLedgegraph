@@ -98,44 +98,43 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
         const userId = (request as any).user?.sub;
         if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-        // Return ticket list with fields matching UI schema from TicketMaster + joins
+        // Return ticket list using system-of-record app.Tickets only
         const sql = `
           SELECT 
-            tm.ticket_id,
-            tm.ticket_no,
-            tm.summary,
-            tm.description,
+            t.ticket_id,
+            t.ticket_no,
+            t.summary,
+            t.description,
             COALESCE(t.problem_description, '') AS problem_description,
-            tm.status,
-            tm.substatus_code,
-            COALESCE(ss.substatus_name, tm.substatus_code) AS substatus_name,
-            COALESCE(tm.severity, 0) AS severity,
-            tm.category_id,
+            t.status,
+            t.substatus_code,
+            COALESCE(ss.substatus_name, t.substatus_code) AS substatus_name,
+            COALESCE(t.severity, 0) AS severity,
+            t.category_id,
             COALESCE(c.name, 'General') AS category_name,
-            tm.site_id,
+            t.site_id,
             COALESCE(s.name, 'Unknown Site') AS site_name,
             COALESCE(t.privacy_level, 'public') AS privacy_level,
             COALESCE(t.is_private, 0) AS is_private,
-            tm.assignee_user_id,
+            t.assignee_user_id,
             COALESCE(au.name, 'Unassigned') AS assignee_name,
-            tm.team_id,
-            tm.created_by,
+            t.team_id,
+            t.created_by,
             COALESCE(cu.name, 'Unknown') AS created_by_name,
-            tm.created_at,
-            tm.updated_at,
+            t.created_at,
+            t.updated_at,
             COALESCE(t.contact_name, '') AS contact_name,
             COALESCE(t.contact_email, '') AS contact_email,
             COALESCE(t.contact_phone, '') AS contact_phone,
-            COALESCE((SELECT COUNT(*) FROM app.TicketWatchers tw WHERE tw.ticket_id = tm.ticket_id AND tw.is_active = 1), 0) AS watcher_count,
-            COALESCE((SELECT COUNT(*) FROM app.TicketWatchers tw WHERE tw.ticket_id = tm.ticket_id AND tw.is_active = 1 AND tw.watcher_type = 'collaborator'), 0) AS collaborator_count
-          FROM app.TicketMaster tm
-          LEFT JOIN app.Tickets t ON t.ticket_id = tm.ticket_id
-          LEFT JOIN app.Sites s ON tm.site_id = s.site_id
-          LEFT JOIN app.Categories c ON tm.category_id = c.category_id
-          LEFT JOIN app.Substatuses ss ON tm.substatus_code = ss.substatus_code
-          LEFT JOIN app.Users au ON tm.assignee_user_id = au.user_id
-          LEFT JOIN app.Users cu ON tm.created_by = cu.user_id
-          ORDER BY tm.updated_at DESC`;
+            COALESCE((SELECT COUNT(*) FROM app.TicketWatchers tw WHERE tw.ticket_id = t.ticket_id AND tw.is_active = 1), 0) AS watcher_count,
+            COALESCE((SELECT COUNT(*) FROM app.TicketWatchers tw WHERE tw.ticket_id = t.ticket_id AND tw.is_active = 1 AND tw.watcher_type = 'collaborator'), 0) AS collaborator_count
+          FROM app.Tickets t
+          LEFT JOIN app.Sites s ON t.site_id = s.site_id
+          LEFT JOIN app.Categories c ON t.category_id = c.category_id
+          LEFT JOIN app.Substatuses ss ON t.substatus_code = ss.substatus_code
+          LEFT JOIN app.Users au ON t.assignee_user_id = au.user_id
+          LEFT JOIN app.Users cu ON t.created_by = cu.user_id
+          ORDER BY t.updated_at DESC`;
         
         const result = await withRls(String(userId), async (conn) => {
           const res = await conn.request().query(sql);
@@ -184,48 +183,47 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
         // Get ticket details with enhanced information
         const sql = `
           SELECT 
-            tm.ticket_id,
-            tm.ticket_no,
-            tm.status,
-            tm.substatus_code,
+            t.ticket_id,
+            t.ticket_no,
+            t.status,
+            t.substatus_code,
             st.substatus_name,
-            tm.severity,
-            tm.category_id,
+            t.severity,
+            t.category_id,
             c.name as category_name,
-            tm.summary,
-            tm.description,
-            tm.site_id,
+            t.summary,
+            t.description,
+            t.site_id,
             s.name as site_name,
-            tm.type_id,
+            t.type_id,
             tt2.name as type_name,
-            tt.privacy_level,
-            tt.is_private,
-            tm.assignee_user_id,
+            t.privacy_level,
+            t.is_private,
+            t.assignee_user_id,
             au.name as assignee_name,
-            tm.team_id,
-            tm.vendor_id,
-            tm.due_at,
-            tm.sla_plan_id,
-            tm.created_by,
+            t.team_id,
+            t.vendor_id,
+            t.due_at,
+            t.sla_plan_id,
+            t.created_by,
             cu.name as created_by_name,
-            tm.created_at,
-            tm.updated_at,
-            tt.contact_name,
-            tt.contact_email,
-            tt.contact_phone,
-            tt.problem_description,
-            CAST(tm.rowversion AS varbinary(8)) as rowversion_bin,
-            (SELECT COUNT(*) FROM app.TicketWatchers tw WHERE tw.ticket_id = tm.ticket_id AND tw.is_active = 1) as watcher_count,
-            (SELECT COUNT(*) FROM app.TicketWatchers tw WHERE tw.ticket_id = tm.ticket_id AND tw.is_active = 1 AND tw.watcher_type = 'collaborator') as collaborator_count
-          FROM app.TicketMaster tm
-          LEFT JOIN app.Tickets tt ON tt.ticket_id = tm.ticket_id
-          LEFT JOIN app.Sites s ON tm.site_id = s.site_id
-          LEFT JOIN app.Categories c ON tm.category_id = c.category_id
-          LEFT JOIN app.Substatuses st ON tm.substatus_code = st.substatus_code
-          LEFT JOIN app.TicketTypes tt2 ON tm.type_id = tt2.type_id
-          LEFT JOIN app.Users au ON tm.assignee_user_id = au.user_id
-          LEFT JOIN app.Users cu ON tm.created_by = cu.user_id
-          WHERE tm.ticket_id = @id`;
+            t.created_at,
+            t.updated_at,
+            t.contact_name,
+            t.contact_email,
+            t.contact_phone,
+            t.problem_description,
+            CAST(t.rowversion AS varbinary(8)) as rowversion_bin,
+            (SELECT COUNT(*) FROM app.TicketWatchers tw WHERE tw.ticket_id = t.ticket_id AND tw.is_active = 1) as watcher_count,
+            (SELECT COUNT(*) FROM app.TicketWatchers tw WHERE tw.ticket_id = t.ticket_id AND tw.is_active = 1 AND tw.watcher_type = 'collaborator') as collaborator_count
+          FROM app.Tickets t
+          LEFT JOIN app.Sites s ON t.site_id = s.site_id
+          LEFT JOIN app.Categories c ON t.category_id = c.category_id
+          LEFT JOIN app.Substatuses st ON t.substatus_code = st.substatus_code
+          LEFT JOIN app.TicketTypes tt2 ON t.type_id = tt2.type_id
+          LEFT JOIN app.Users au ON t.assignee_user_id = au.user_id
+          LEFT JOIN app.Users cu ON t.created_by = cu.user_id
+          WHERE t.ticket_id = @id`;
           
         if (localReq) {
           res = await localReq.input('id', params.data.id).query(sql);
@@ -460,9 +458,81 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
       try {
         const payload = { ticket_id: Number(params.data.id), ...(body.data) };
   const localReq = getRequestFromContext(request);
+        // If privacy_level is present, update privacy first using dedicated proc
+        const maybeUpdatePrivacy = async (req: any) => {
+          if (body.data && Object.prototype.hasOwnProperty.call(body.data, 'privacy_level')) {
+            const level = (body.data as any).privacy_level;
+            if (level) {
+              // Only run proc if supporting table exists
+              const hasTickets = await req.query("SELECT 1 AS x WHERE OBJECT_ID('app.Tickets','U') IS NOT NULL");
+              if (hasTickets?.recordset?.length) {
+                await req
+                  .input('ticket_id', Number(params.data.id))
+                  .input('privacy_level', level)
+                  .input('updated_by', userId)
+                  .execute('app.usp_UpdateTicketPrivacy');
+              }
+            }
+          }
+        };
+
+        // If contact fields are present, update them directly on app.Tickets (proc v2 does not handle these yet)
+        const maybeUpdateContactFields = async (req: any) => {
+          const keys = ['contact_name','contact_email','contact_phone','problem_description'];
+          const provided = keys.filter(k => Object.prototype.hasOwnProperty.call(body.data as any, k));
+          if (provided.length === 0) return;
+          // Skip if app.Tickets doesn't exist in this environment
+          const existsRes = await req.query("SELECT 1 AS x WHERE OBJECT_ID('app.Tickets','U') IS NOT NULL");
+          if (!existsRes?.recordset?.length) return;
+          // Check which columns actually exist
+          const colsRes = await req.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='app' AND TABLE_NAME='Tickets' AND COLUMN_NAME IN ('contact_name','contact_email','contact_phone','problem_description')");
+          const existing = new Set((colsRes.recordset || []).map((r: any) => r.COLUMN_NAME));
+          const setClauses: string[] = [];
+          const r = req;
+          r.input('tid', Number(params.data.id));
+          if (provided.includes('contact_name') && existing.has('contact_name')) { setClauses.push('contact_name = @contact_name'); r.input('contact_name', (body.data as any).contact_name ?? null); }
+          if (provided.includes('contact_email') && existing.has('contact_email')) { setClauses.push('contact_email = @contact_email'); r.input('contact_email', (body.data as any).contact_email ?? null); }
+          if (provided.includes('contact_phone') && existing.has('contact_phone')) { setClauses.push('contact_phone = @contact_phone'); r.input('contact_phone', (body.data as any).contact_phone ?? null); }
+          if (provided.includes('problem_description') && existing.has('problem_description')) { setClauses.push('problem_description = @problem_description'); r.input('problem_description', (body.data as any).problem_description ?? null); }
+          if (setClauses.length > 0) {
+            const sql = `UPDATE app.Tickets SET ${setClauses.join(', ')}, updated_at = SYSUTCDATETIME() WHERE ticket_id = @tid`;
+            await r.query(sql);
+          }
+        };
+
+        // Helper: load current ticket state needed by usp for fields not provided
+        const loadCurrent = async (req: any): Promise<any> => {
+          const sql = `
+            SELECT 
+              t.status,
+              t.substatus_code,
+              t.severity,
+              t.category_id,
+              t.summary,
+              t.description,
+              t.site_id,
+              t.created_by,
+              t.assignee_user_id,
+              t.team_id,
+              t.vendor_id,
+              t.due_at,
+              t.sla_plan_id
+            FROM app.Tickets t
+            WHERE t.ticket_id = @id`;
+          const res = await req.input('id', Number(params.data.id)).query(sql);
+          return res.recordset?.[0] ?? {};
+        };
+
         if (localReq) {
           const req = localReq;
-          req.input('payload', JSON.stringify(payload));
+          // Handle privacy and contact fields first so GET reflects immediately
+          await maybeUpdatePrivacy(req);
+          await maybeUpdateContactFields(req);
+
+          // Merge with current state to avoid nulling required fields on partial updates
+          const current = await loadCurrent(req);
+          const merged = { ...current, ...body.data, ticket_id: Number(params.data.id) };
+          req.input('payload', JSON.stringify(merged));
           if (expectedRowversion)
             req.input('expected_rowversion', expectedRowversion);
           try {
@@ -482,7 +552,13 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
 
         try {
           const out = await withRls(userId, async (conn) => {
-            const r = conn.request().input('payload', JSON.stringify(payload));
+            const r = conn.request();
+            // Handle privacy + contact fields first
+            await maybeUpdatePrivacy(r);
+            await maybeUpdateContactFields(r);
+            const current = await loadCurrent(r);
+            const merged = { ...current, ...body.data, ticket_id: Number(params.data.id) };
+            r.input('payload', JSON.stringify(merged));
             if (expectedRowversion)
               r.input('expected_rowversion', expectedRowversion);
             const rr = await r.execute('app.usp_CreateOrUpdateTicket_v2');
@@ -538,42 +614,7 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
           return res.recordset?.[0]?.comment_id ?? null;
         };
 
-        const upsertStub = async (req: any) => {
-          // Strategy 1: attempt no-op upsert (may not create when only ticket_id is provided)
-          const payload = { ticket_id: Number(params.data.id) };
-          try {
-            await req.input('payload', JSON.stringify(payload)).execute('app.usp_CreateOrUpdateTicket_v2');
-          } catch (e) {
-            // ignore and try backfill path below
-          }
-
-          // Strategy 2: backfill missing app.Tickets row from app.TicketMaster (identity insert)
-          const sql = `
-            IF EXISTS (SELECT 1 FROM app.TicketMaster WHERE ticket_id=@tid)
-               AND NOT EXISTS (SELECT 1 FROM app.Tickets WHERE ticket_id=@tid)
-            BEGIN
-              SET IDENTITY_INSERT app.Tickets ON;
-              INSERT INTO app.Tickets (
-                ticket_id, external_ref, status, severity, category_id, summary, description,
-                site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id,
-                created_at, updated_at, substatus_code, type_id
-              )
-              SELECT 
-                m.ticket_id, m.external_ref, m.status, ISNULL(m.severity, 0), m.category_id, m.summary, m.description,
-                m.site_id, m.created_by, m.assignee_user_id, m.team_id, m.vendor_id, m.due_at, m.sla_plan_id,
-                m.created_at, m.updated_at, m.substatus_code, m.type_id
-              FROM app.TicketMaster m WHERE m.ticket_id = @tid;
-              SET IDENTITY_INSERT app.Tickets OFF;
-            END`;
-          try {
-            await req.input('tid', Number(params.data.id)).query(sql);
-          } catch (err: any) {
-            // Ignore duplicate PK errors if another path created the row concurrently
-            if (!(err && (err.number === 2627 || String(err.message || '').includes('PRIMARY KEY constraint')))) {
-              throw err;
-            }
-          }
-        };
+  // Tickets-only model: no backfill
 
         const attempt = async () => {
           if (localReq) return runAdd(localReq);
@@ -585,24 +626,9 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
           return reply.code(201).send({ comment_id: commentId });
         } catch (e: any) {
           const msg = e?.message || '';
-          const isInvalidId = msg.includes('Invalid ticket_id');
-          fastify.log.warn({ err: e, ticket_id: params.data.id }, 'Add message failed, trying upsert stub if needed');
-          if (isInvalidId) {
-            try {
-              if (localReq) {
-                await upsertStub(localReq);
-              } else {
-                await withRls(userId, (conn) => upsertStub(conn.request()));
-              }
-              // Retry once after upsert
-              const commentId = await attempt();
-              return reply.code(201).send({ comment_id: commentId });
-            } catch (retryErr: any) {
-              fastify.log.error({ err: retryErr }, 'Retry after upsert failed for add message');
-              return reply.code(404).send({ error: 'Ticket not found or not eligible for comments' });
-            }
+          if (msg.includes('Invalid ticket_id')) {
+            return reply.code(404).send({ error: 'Ticket not found' });
           }
-          // Other errors
           throw e;
         }
       } catch (err) {
@@ -818,6 +844,9 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
 
       try {
         const localReq = getRequestFromContext(request);
+
+  // Tickets-only model: no backfill
+
         const run = async (req: any) => {
           req.input('ticket_id', Number(params.data.id));
           req.input('user_id', body.data.user_id);
@@ -831,12 +860,26 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
           const res = await req.execute('app.usp_AddTicketWatcher');
           return res.recordset;
         };
-        const result = localReq ? await run(localReq) : await withRls(userId, (c) => run(c.request()));
-        return reply.code(201).send({ message: 'Watcher added successfully', watcher_id: result[0]?.watcher_id });
-      } catch (err: any) {
-        if (err.message && err.message.includes('already exists')) {
-          return reply.code(409).send({ error: 'Watcher already exists for this ticket' });
+
+        const attempt = async () => {
+          if (localReq) return run(localReq);
+          return withRls(userId, (c) => run(c.request()));
+        };
+
+        try {
+          const result = await attempt();
+          return reply.code(201).send({ message: 'Watcher added successfully', watcher_id: result[0]?.watcher_id });
+        } catch (e: any) {
+          const msg = e?.message || '';
+          if (msg.includes('Ticket not found') || msg.includes('Invalid ticket')) {
+            return reply.code(404).send({ error: 'Ticket not found' });
+          }
+          if (msg.includes('already exists')) {
+            return reply.code(409).send({ error: 'Watcher already exists for this ticket' });
+          }
+          throw e;
         }
+      } catch (err: any) {
         fastify.log.error({ err }, 'Failed to add ticket watcher');
         return reply.code(500).send({ error: 'Failed to add ticket watcher' });
       }

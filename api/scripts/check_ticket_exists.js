@@ -13,10 +13,8 @@ async function main() {
 
   const pool = await sql.connect(config);
   try {
-    const master = await pool.request().input('id', sql.Int, ticketId).query('SELECT COUNT(*) AS cnt FROM app.TicketMaster WHERE ticket_id=@id');
-    const tickets = await pool.request().input('id', sql.Int, ticketId).query('SELECT COUNT(*) AS cnt FROM app.Tickets WHERE ticket_id=@id');
-    console.log('TicketMaster exists:', master.recordset[0].cnt);
-    console.log('Tickets exists     :', tickets.recordset[0].cnt);
+  const tickets = await pool.request().input('id', sql.Int, ticketId).query('SELECT COUNT(*) AS cnt FROM app.Tickets WHERE ticket_id=@id');
+  console.log('Tickets exists:', tickets.recordset[0].cnt);
   } finally {
     await pool.close();
   }

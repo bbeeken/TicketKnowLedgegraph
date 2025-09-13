@@ -1,5 +1,5 @@
 -- 13_ticket_procs.sql
--- Atomic create/update ticket proc targeting app.TicketMaster, writes history, assets, and outbox
+-- Atomic create/update ticket proc targeting app.Tickets (system of record), writes history, assets, and outbox
 USE [OpsGraph];
 GO
 SET ANSI_NULLS ON;
@@ -34,17 +34,25 @@ BEGIN
 
     IF @ticket_id IS NULL
     BEGIN
-      -- Insert canonical ticket into app.Tickets (system of record); trigger will populate TicketMaster
-  INSERT INTO app.Tickets (status, severity, category_id, summary, description, site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id, type_id, created_at, updated_at, substatus_code)
-  VALUES (@status, ISNULL(@severity,0), @category_id, @summary, @description, @site_id, @created_by, @assignee_user_id, @team_id, @vendor_id, @due_at, @sla_plan_id, @type_id, SYSUTCDATETIME(), SYSUTCDATETIME(), @substatus_code);
+      -- Insert canonical ticket into app.Tickets (system of record)
+      INSERT INTO app.Tickets (
+        status, severity, category_id, summary, description,
+        site_id, created_by, assignee_user_id, team_id, vendor_id,
+        due_at, sla_plan_id, type_id, created_at, updated_at, substatus_code
+      )
+      VALUES (
+        @status, ISNULL(@severity,0), @category_id, @summary, @description,
+        @site_id, @created_by, @assignee_user_id, @team_id, @vendor_id,
+        @due_at, @sla_plan_id, @type_id, SYSUTCDATETIME(), SYSUTCDATETIME(), @substatus_code
+      );
       SET @ticket_id = SCOPE_IDENTITY();
     END
     ELSE
     BEGIN
-      -- Update path: enforce optimistic concurrency if expected_rowversion provided (check TicketMaster rowversion)
+      -- Update path: enforce optimistic concurrency if expected_rowversion provided (check Tickets rowversion)
       IF @expected_rowversion IS NOT NULL
       BEGIN
-        IF NOT EXISTS (SELECT 1 FROM app.TicketMaster WHERE ticket_id=@ticket_id AND rowversion=@expected_rowversion)
+        IF NOT EXISTS (SELECT 1 FROM app.Tickets WHERE ticket_id=@ticket_id AND rowversion=@expected_rowversion)
         BEGIN
           ROLLBACK TRAN;
           THROW 51000, 'Rowversion mismatch (concurrency)', 1;
@@ -69,56 +77,8 @@ BEGIN
       WHERE ticket_id = @ticket_id;
     END
 
-  -- Force sync into TicketMaster via MERGE (idempotent, independent of trigger)
-  MERGE app.TicketMaster AS tgt
-  USING (
-    SELECT t.ticket_id,
-         t.ticket_no,
-         t.external_ref,
-         t.status,
-         t.substatus_code,
-         t.severity,
-         t.summary,
-         t.description,
-         t.site_id,
-         t.created_by,
-         t.assignee_user_id,
-         t.team_id,
-         t.vendor_id,
-         t.due_at,
-         t.sla_plan_id,
-         t.created_at,
-         t.updated_at
-    FROM app.Tickets t WHERE t.ticket_id = @ticket_id
-  ) AS src
-    ON tgt.ticket_id = src.ticket_id
-  WHEN MATCHED THEN UPDATE SET
-    status = src.status,
-    substatus_code = src.substatus_code,
-    severity = src.severity,
-    summary = src.summary,
-    description = src.description,
-    site_id = src.site_id,
-    assignee_user_id = src.assignee_user_id,
-    team_id = src.team_id,
-    vendor_id = src.vendor_id,
-    due_at = src.due_at,
-    sla_plan_id = src.sla_plan_id,
-    updated_at = src.updated_at
-  WHEN NOT MATCHED THEN INSERT (ticket_id, ticket_no, external_ref, status, substatus_code, priority, severity, summary, description, site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id, created_at, updated_at)
-  VALUES (src.ticket_id, src.ticket_no, src.external_ref, src.status, src.substatus_code, NULL, src.severity, src.summary, src.description, src.site_id, src.created_by, src.assignee_user_id, src.team_id, src.vendor_id, src.due_at, src.sla_plan_id, src.created_at, src.updated_at);
-
-    -- Record history (guard against rare missing master row in bootstrap scenarios)
-    IF NOT EXISTS (SELECT 1 FROM app.TicketMaster WHERE ticket_id=@ticket_id)
-    BEGIN
-      -- Retry merge once more
-      MERGE app.TicketMaster AS tgt
-      USING (SELECT t.ticket_id, t.ticket_no, t.external_ref, t.status, t.substatus_code, t.severity, t.summary, t.description, t.site_id, t.created_by, t.assignee_user_id, t.team_id, t.vendor_id, t.due_at, t.sla_plan_id, t.created_at, t.updated_at FROM app.Tickets t WHERE t.ticket_id=@ticket_id) AS src
-        ON tgt.ticket_id = src.ticket_id
-      WHEN NOT MATCHED THEN INSERT (ticket_id, ticket_no, external_ref, status, substatus_code, priority, severity, summary, description, site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id, created_at, updated_at)
-      VALUES (src.ticket_id, src.ticket_no, src.external_ref, src.status, src.substatus_code, NULL, src.severity, src.summary, src.description, src.site_id, src.created_by, src.assignee_user_id, src.team_id, src.vendor_id, src.due_at, src.sla_plan_id, src.created_at, src.updated_at);
-    END
-    IF EXISTS (SELECT 1 FROM app.TicketMaster WHERE ticket_id=@ticket_id)
+    -- Record history if history table exists
+    IF EXISTS (SELECT 1 FROM sys.tables WHERE name='TicketHistory' AND schema_id = SCHEMA_ID('app'))
     BEGIN
       BEGIN TRY
         INSERT INTO app.TicketHistory (ticket_id, change_type, old_value, new_value, changed_by, changed_at, metadata)
@@ -252,14 +212,8 @@ BEGIN
     INSERT INTO app.TicketAssignments(ticket_id, user_id, team_id, assigned_by)
     VALUES(@ticket_id, @user_id, @team_id, @assigned_by);
 
-    -- Update SoR and master
+    -- Update system of record only
     UPDATE app.Tickets
-      SET assignee_user_id = @user_id,
-          team_id = @team_id,
-          updated_at = SYSUTCDATETIME()
-      WHERE ticket_id = @ticket_id;
-
-    UPDATE app.TicketMaster
       SET assignee_user_id = @user_id,
           team_id = @team_id,
           updated_at = SYSUTCDATETIME()

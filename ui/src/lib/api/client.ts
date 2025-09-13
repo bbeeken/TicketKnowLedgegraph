@@ -60,3 +60,30 @@ export async function apiFetch<T = any>(input: string, init: ApiFetchOptions = {
   }
   return body as T;
 }
+
+// Variant that returns the Response (to read headers like ETag)
+export async function apiFetchResponse<T = any>(input: string, init: ApiFetchOptions = {}): Promise<{ data: T; response: Response; etag?: string }>{
+  const { auth = true, skipRedirectOn401 = false, headers, ...rest } = init;
+  const url = input.startsWith('http') ? input : `${API_BASE_URL}${input}`;
+  const finalHeaders: Record<string,string> = { Accept: 'application/json', ...(headers as any || {}) };
+  const bodyIsFormData = typeof FormData !== 'undefined' && (rest as any)?.body instanceof FormData;
+  if (!bodyIsFormData) finalHeaders['Content-Type'] = finalHeaders['Content-Type'] || 'application/json';
+  if (auth && typeof window !== 'undefined') {
+    const token = localStorage.getItem('opsgraph_token');
+    if (token) finalHeaders['Authorization'] = `Bearer ${token}`;
+  }
+  const res = await fetch(url, { ...rest, headers: finalHeaders });
+  let body: any = null;
+  const text = await res.text();
+  if (text) { try { body = JSON.parse(text); } catch { body = text; } }
+  if (!res.ok) {
+    if (res.status === 401 && !skipRedirectOn401 && typeof window !== 'undefined') {
+      localStorage.removeItem('opsgraph_token');
+      Router.replace('/login');
+    }
+    const err: ApiError = Object.assign(new Error(body?.error || `Request failed: ${res.status}`), { status: res.status, body });
+    throw err;
+  }
+  const etag = res.headers.get('etag') || undefined;
+  return { data: body as T, response: res, etag };
+}

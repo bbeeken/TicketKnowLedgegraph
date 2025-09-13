@@ -23,8 +23,8 @@ AS
 BEGIN
     SET NOCOUNT ON;
     BEGIN TRY
-        -- Check existence against TicketMaster (not subject to RLS filters)
-        IF NOT EXISTS (SELECT 1 FROM app.TicketMaster WHERE ticket_id=@ticket_id)
+    -- Check existence against Tickets (system of record)
+    IF NOT EXISTS (SELECT 1 FROM app.Tickets WHERE ticket_id=@ticket_id)
             RAISERROR('Invalid ticket_id', 16, 1);
 
         INSERT INTO app.TicketComments (

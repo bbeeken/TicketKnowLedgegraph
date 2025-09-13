@@ -52,3 +52,9 @@ export const getVendorAssets = async (id: number): Promise<VendorAsset[]> => {
   const data = await apiFetch(`/vendors/${id}/assets`);
   return z.array(VendorAssetSchema).parse(data);
 };
+
+// Create or update a vendor service request linked to a ticket
+export async function upsertVendorServiceRequest(payload: { ticket_id: number; vendor_id: number; request_type: string; status?: string; notes?: string; vsr_id?: number; }): Promise<{ vsr_id: number | null }> {
+  const { ticket_id, ...rest } = payload;
+  return apiFetch(`/tickets/${ticket_id}/service-request`, { method: 'POST', body: JSON.stringify(rest) });
+}

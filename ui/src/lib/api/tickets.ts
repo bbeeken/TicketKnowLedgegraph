@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { apiFetch } from './client';
+import { apiFetch, apiFetchResponse } from './client';
 
 export const ticketSchema = z.object({
   ticket_id: z.number(),
@@ -176,8 +176,10 @@ export async function getTickets(filters: TicketFilters = {}) {
   return z.array(ticketSchema).parse(data);
 }
 
+let lastTicketEtag: Record<number,string|undefined> = {};
 export async function getTicket(id: number) {
-  const data = await apiFetch(`/tickets/${id}`);
+  const { data, etag } = await apiFetchResponse(`/tickets/${id}`);
+  if (etag) lastTicketEtag[id] = etag;
   return ticketSchema.parse(data);
 }
 
@@ -196,10 +198,21 @@ export async function updateTicket(id: number, updates: Partial<Ticket>) {
 }
 
 export async function updateTicketFields(id: number, updates: UpdateTicketPayload) {
-  return apiFetch(`/tickets/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ data: updates })
-  });
+  const etag = lastTicketEtag[id];
+  try {
+    const res = await apiFetch(`/tickets/${id}`, {
+      method: 'PATCH',
+      headers: etag ? { 'If-Match': etag } : undefined,
+      body: JSON.stringify({ data: updates })
+    });
+    return res;
+  } catch (e: any) {
+    if (e?.status === 412) {
+      // Rowversion mismatch; refresh ETag and propagate
+      try { await getTicket(id); } catch {}
+    }
+    throw e;
+  }
 }
 
 export async function getTicketMetadata(): Promise<TicketMetadata> {

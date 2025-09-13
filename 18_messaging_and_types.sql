@@ -6,6 +6,15 @@ SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
 GO
 
+-- Ensure TicketPriorities exists (11_ticket_master deprecated)
+IF OBJECT_ID('app.TicketPriorities','U') IS NULL
+CREATE TABLE app.TicketPriorities (
+    priority_id TINYINT PRIMARY KEY,
+    name NVARCHAR(50) NOT NULL,
+    weight INT NOT NULL
+);
+GO
+
 -- Ensure TicketTypes table exists (11_ticket_master creates it too; keep idempotent seeds here)
 IF OBJECT_ID('app.TicketTypes','U') IS NULL
 CREATE TABLE app.TicketTypes (
@@ -34,45 +43,7 @@ BEGIN
 END
 GO
 
--- Ensure TicketMaster has type_id (11_ticket_master already has); skip if present
--- (No-op if exists)
-IF OBJECT_ID('app.TicketMaster','U') IS NOT NULL AND COL_LENGTH('app.TicketMaster','type_id') IS NULL
-    ALTER TABLE app.TicketMaster ADD type_id INT NULL REFERENCES app.TicketTypes(type_id);
-GO
-
--- Update TicketMaster trigger to also sync type_id
-CREATE OR ALTER TRIGGER app.TicketMaster_InsertFromTickets
-ON app.Tickets
-AFTER INSERT, UPDATE
-AS
-BEGIN
-    SET NOCOUNT ON;
-    MERGE INTO app.TicketMaster AS tgt
-    USING (
-        SELECT t.ticket_id, t.ticket_no, t.external_ref, t.status, t.substatus_code, t.severity, t.category_id, t.summary, t.description, t.site_id, t.created_by, t.assignee_user_id, t.team_id, t.vendor_id, t.due_at, t.sla_plan_id, t.type_id, t.created_at, t.updated_at
-        FROM inserted t
-    ) AS src
-    ON tgt.ticket_id = src.ticket_id
-    WHEN MATCHED THEN
-        UPDATE SET status = src.status,
-                   substatus_code = src.substatus_code,
-                   severity = src.severity,
-                   category_id = src.category_id,
-                   summary = src.summary,
-                   description = src.description,
-                   site_id = src.site_id,
-                   assignee_user_id = src.assignee_user_id,
-                   team_id = src.team_id,
-                   vendor_id = src.vendor_id,
-                   due_at = src.due_at,
-                   sla_plan_id = src.sla_plan_id,
-                   type_id = src.type_id,
-                   updated_at = src.updated_at
-    WHEN NOT MATCHED THEN
-        INSERT (ticket_id, ticket_no, external_ref, status, substatus_code, priority, severity, category_id, summary, description, site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id, type_id, created_at, updated_at)
-        VALUES (src.ticket_id, src.ticket_no, src.external_ref, src.status, src.substatus_code, NULL, src.severity, src.category_id, src.summary, src.description, src.site_id, src.created_by, src.assignee_user_id, src.team_id, src.vendor_id, src.due_at, src.sla_plan_id, src.type_id, src.created_at, src.updated_at);
-END
-GO
+-- TicketMaster was removed; no triggers or alterations against TicketMaster.
 
 -- Messaging: extend TicketComments with message_type, create read receipts
 IF OBJECT_ID('app.TicketComments','U') IS NOT NULL AND COL_LENGTH('app.TicketComments','message_type') IS NULL

@@ -15,6 +15,7 @@ import {
   type TicketMetadata,
   type TicketWatcher
 } from '@/lib/api/tickets';
+import { getVendors, upsertVendorServiceRequest, type Vendor } from '@/lib/api/vendors';
 import {
   Box,
   Button,
@@ -147,6 +148,9 @@ export default function TicketDetailPage() {
   const [newWatcher, setNewWatcher] = useState<{ user_id?: number | null; name?: string; email?: string; watcher_type?: 'interested' | 'collaborator' | 'site_contact' | 'assignee_backup'; }>({ watcher_type: 'interested' });
   const [siteContactUserId, setSiteContactUserId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [vsrForm, setVsrForm] = useState<{ vendor_id: number | null; request_type: string; status: string; notes: string }>({ vendor_id: null, request_type: '', status: 'open', notes: '' });
+  const [quickSaving, setQuickSaving] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!id) return;
@@ -213,6 +217,15 @@ export default function TicketDetailPage() {
         toast({ status: 'error', title: 'Failed to load ticket', description: e.message });
       } finally {
         setIsLoading(false);
+      }
+    })();
+    // Load vendors list for VSR
+    (async () => {
+      try {
+        const list = await getVendors();
+        setVendors(list);
+      } catch (e) {
+        // ignore
       }
     })();
   }, [id, toast]);
@@ -282,9 +295,36 @@ export default function TicketDetailPage() {
         }
       }
     } catch (e: any) {
-      toast({ status: 'error', title: 'Failed to update ticket', description: e.message });
+      if (e?.status === 412) {
+        // Concurrency conflict
+        try { const fresh = await getTicket(Number(id)); setTicket(fresh); } catch {}
+        toast({ status: 'warning', title: 'Ticket changed by someone else', description: 'We refreshed the latest state. Please re-apply your changes.' });
+      } else {
+        toast({ status: 'error', title: 'Failed to update ticket', description: e.message });
+      }
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // Quick save for sidebar fields
+  const quickSaveField = async (field: 'assignee_user_id' | 'category_id' | 'privacy_level', value: any) => {
+    try {
+      setQuickSaving((s) => ({ ...s, [field]: true }));
+      await updateTicketFields(Number(id), { [field]: value } as any);
+      const updated = await getTicket(Number(id));
+      setTicket(updated);
+      setEditValues((prev: any) => ({ ...prev, [field]: value }));
+      toast({ status: 'success', title: 'Saved', description: `${field.replace('_', ' ')} updated` });
+    } catch (e: any) {
+      if (e?.status === 412) {
+        try { const fresh = await getTicket(Number(id)); setTicket(fresh); } catch {}
+        toast({ status: 'warning', title: 'Save conflicted', description: 'Ticket changed elsewhere. Refreshed—please try again.' });
+      } else {
+        toast({ status: 'error', title: 'Quick save failed', description: e.message });
+      }
+    } finally {
+      setQuickSaving((s) => ({ ...s, [field]: false }));
     }
   };
 
@@ -828,7 +868,7 @@ export default function TicketDetailPage() {
               <Flex justify="space-between" align="center">
                 <VStack align="start" spacing={2}>
                   <HStack>
-                    <Heading size="lg" fontWeight="bold">
+                    <Heading size="lg" fontWeight="bold" textShadow="0 1px 2px rgba(0,0,0,0.6)">
                       Ticket #{ticket.ticket_id}
                     </Heading>
                     <Badge 
@@ -865,10 +905,10 @@ export default function TicketDetailPage() {
                       </Badge>
                     )}
                   </HStack>
-                  <Text fontSize="xl" fontWeight="semibold" opacity={0.9}>
+                  <Text fontSize="xl" fontWeight="semibold" opacity={0.95} textShadow="0 1px 2px rgba(0,0,0,0.5)">
                     {ticket.summary}
                   </Text>
-                  <HStack spacing={4} fontSize="sm" opacity={0.8}>
+                  <HStack spacing={4} fontSize="sm" opacity={0.95} color="white" textShadow="0 1px 2px rgba(0,0,0,0.5)">
                     <HStack>
                       <Icon as={UserIcon} />
                       <Text>Created by {ticket.created_by_name || 'Unknown'}</Text>
@@ -915,7 +955,7 @@ export default function TicketDetailPage() {
                   <input ref={fileInputRef} type="file" hidden onChange={handleFileSelected} />
                   
                   <Box w="200px">
-                    <Text fontSize="xs" opacity={0.8} mb={1}>Progress: {getStatusProgress(ticket.status)}%</Text>
+                    <Text fontSize="xs" opacity={0.95} mb={1} color="white" textShadow="0 1px 2px rgba(0,0,0,0.5)">Progress: {getStatusProgress(ticket.status)}%</Text>
                     <Progress 
                       value={getStatusProgress(ticket.status)} 
                       colorScheme="cyan" 
@@ -1365,7 +1405,11 @@ export default function TicketDetailPage() {
                               .map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id }))
                               .find(o => o.value === (editValues.assignee_user_id ?? ticket.assignee_user_id ?? undefined)) || null
                           }
-                          onChange={(opt: any) => setEditValues({ ...editValues, assignee_user_id: opt ? Number(opt.value) : null })}
+                          onChange={(opt: any) => {
+                            const newVal = opt ? Number(opt.value) : null;
+                            setEditValues({ ...editValues, assignee_user_id: newVal });
+                            quickSaveField('assignee_user_id', newVal);
+                          }}
                           options={metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })) || []}
                           placeholder="Select assignee"
                           isClearable
@@ -1375,6 +1419,7 @@ export default function TicketDetailPage() {
                           {ticket.assignee_name || 'Unassigned'}
                         </StatNumber>
                       )}
+                      {quickSaving.assignee_user_id && <Text fontSize="xs" color={textSecondary}>Saving…</Text>}
                     </Stat>
                     
                     <Divider />
@@ -1392,7 +1437,11 @@ export default function TicketDetailPage() {
                               .map(c => ({ label: c.name, value: c.category_id }))
                               .find(o => o.value === (editValues.category_id ?? ticket.category_id ?? undefined)) || null
                           }
-                          onChange={(opt: any) => setEditValues({ ...editValues, category_id: opt ? Number(opt.value) : null })}
+                          onChange={(opt: any) => {
+                            const newVal = opt ? Number(opt.value) : null;
+                            setEditValues({ ...editValues, category_id: newVal });
+                            quickSaveField('category_id', newVal);
+                          }}
                           options={metadata?.categories.map(c => ({ label: c.name, value: c.category_id })) || []}
                           placeholder="Select category"
                           isClearable
@@ -1402,6 +1451,7 @@ export default function TicketDetailPage() {
                           {ticket.category_name || 'No category'}
                         </StatNumber>
                       )}
+                      {quickSaving.category_id && <Text fontSize="xs" color={textSecondary}>Saving…</Text>}
                     </Stat>
                     
                     <Divider />
@@ -1427,7 +1477,11 @@ export default function TicketDetailPage() {
                           selectedOptionStyle="check"
                           colorScheme="blue"
                           value={{ label: (editValues.privacy_level || ticket.privacy_level || 'public'), value: (editValues.privacy_level || ticket.privacy_level || 'public') }}
-                          onChange={(opt: any) => setEditValues({ ...editValues, privacy_level: opt?.value })}
+                          onChange={(opt: any) => {
+                            const newVal = opt?.value;
+                            setEditValues({ ...editValues, privacy_level: newVal });
+                            quickSaveField('privacy_level', newVal);
+                          }}
                           options={[
                             { label: 'public', value: 'public' },
                             { label: 'site_only', value: 'site_only' },
@@ -1441,6 +1495,7 @@ export default function TicketDetailPage() {
                           </Badge>
                         </StatNumber>
                       )}
+                      {quickSaving.privacy_level && <Text fontSize="xs" color={textSecondary}>Saving…</Text>}
                     </Stat>
                   </VStack>
                 </CardBody>
@@ -1535,6 +1590,85 @@ export default function TicketDetailPage() {
                     <Button size="xs" variant="outline" colorScheme="blue" onClick={() => setAddWatcherOpen(true)}>
                       Add Watcher
                     </Button>
+                  </VStack>
+                </CardBody>
+              </Card>
+
+              {/* Vendor Service Request */}
+              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
+                <CardHeader bg="gray.50" borderTopRadius="md">
+                  <Heading size="sm" color={textPrimary}>Vendor Service Request</Heading>
+                </CardHeader>
+                <CardBody>
+                  <VStack spacing={3} align="stretch">
+                    <FormControl>
+                      <FormLabel color={textSecondary}>Vendor</FormLabel>
+                      <ChakraSelect
+                        useBasicStyles
+                        isSearchable
+                        selectedOptionStyle="check"
+                        colorScheme="blue"
+                        value={
+                          vsrForm.vendor_id
+                            ? vendors.map(v => ({ label: v.name, value: v.vendor_id })).find(o => o.value === vsrForm.vendor_id) || null
+                            : null
+                        }
+                        onChange={(opt: any) => setVsrForm({ ...vsrForm, vendor_id: opt ? Number(opt.value) : null })}
+                        options={vendors.map(v => ({ label: v.name, value: v.vendor_id }))}
+                        placeholder="Select vendor"
+                        isClearable
+                      />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel color={textSecondary}>Request Type</FormLabel>
+                      <Input value={vsrForm.request_type} onChange={(e) => setVsrForm({ ...vsrForm, request_type: e.target.value })} placeholder="e.g., Repair, Install, PM" />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel color={textSecondary}>Status</FormLabel>
+                      <Select value={vsrForm.status} onChange={(e) => setVsrForm({ ...vsrForm, status: e.target.value })}>
+                        <option value="open">Open</option>
+                        <option value="in_progress">In Progress</option>
+                        <option value="waiting_vendor">Waiting on Vendor</option>
+                        <option value="completed">Completed</option>
+                      </Select>
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel color={textSecondary}>Notes</FormLabel>
+                      <Textarea rows={3} value={vsrForm.notes} onChange={(e) => setVsrForm({ ...vsrForm, notes: e.target.value })} placeholder="Optional notes for the vendor" />
+                    </FormControl>
+                    <HStack justify="flex-end">
+                      <Button
+                        size="sm"
+                        colorScheme="blue"
+                        isDisabled={!vsrForm.vendor_id || !vsrForm.request_type}
+                        isLoading={submitting}
+                        onClick={async () => {
+                          try {
+                            setSubmitting(true);
+                            await upsertVendorServiceRequest({
+                              ticket_id: Number(id),
+                              vendor_id: Number(vsrForm.vendor_id),
+                              request_type: vsrForm.request_type,
+                              status: vsrForm.status,
+                              notes: vsrForm.notes || undefined
+                            });
+                            toast({ status: 'success', title: 'Service request saved' });
+                            try {
+                              await postTicketMessage(Number(id), { message_type: 'system', content_format: 'text', body: `Vendor service request created for vendor ${vendors.find(v => v.vendor_id === vsrForm.vendor_id)?.name || vsrForm.vendor_id}` });
+                              const updatedMessages = await getTicketMessages(Number(id));
+                              setMessages(updatedMessages);
+                            } catch {}
+                            setVsrForm({ vendor_id: null, request_type: '', status: 'open', notes: '' });
+                          } catch (e: any) {
+                            toast({ status: 'error', title: 'Failed to save service request', description: e.message });
+                          } finally {
+                            setSubmitting(false);
+                          }
+                        }}
+                      >
+                        Save Request
+                      </Button>
+                    </HStack>
                   </VStack>
                 </CardBody>
               </Card>

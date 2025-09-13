@@ -4,7 +4,7 @@ import path from 'path';
 import { pipeline } from 'stream/promises';
 import crypto from 'crypto';
 import { cfg } from '../config';
-import { withRls } from '../db/sql';
+import { withRls } from '../sql';
 
 export async function registerAttachmentRoutes(fastify: FastifyInstance) {
   // Ensure upload dir exists

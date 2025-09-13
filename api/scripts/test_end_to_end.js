@@ -78,7 +78,7 @@ async function main() {
   // Verify
     const v1 = await exec(pool, `SELECT TOP 1 vendor_id, name FROM app.Vendors WHERE vendor_id=@id`, { id: vendor_id });
     const a1 = await exec(pool, `SELECT asset_id, vendor_id FROM app.Assets WHERE asset_id=9001`);
-    const t1 = await exec(pool, `SELECT ticket_id, status, severity, substatus_code, assignee_user_id FROM app.TicketMaster WHERE ticket_id=@id`, { id: ticket_id });
+  const t1 = await exec(pool, `SELECT ticket_id, status, severity, substatus_code, assignee_user_id FROM app.Tickets WHERE ticket_id=@id`, { id: ticket_id });
     const ta = await exec(pool, `SELECT TOP 1 ticket_id, user_id FROM app.TicketAssignments WHERE ticket_id=@id ORDER BY id DESC`, { id: ticket_id });
   const attT = await exec(pool, `SELECT COUNT(*) AS c FROM app.Attachments WHERE ticket_id=@id`, { id: ticket_id });
   const attV = await exec(pool, `SELECT COUNT(*) AS c FROM app.Attachments WHERE vendor_id=@id`, { id: vendor_id });
