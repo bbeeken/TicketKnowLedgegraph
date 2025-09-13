@@ -26,6 +26,9 @@ export type AuthUser = {
 
 export type LoginMethod = 'microsoft' | 'local';
 
+// API configuration
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || '/api';
+
 // Microsoft Azure AD configuration
 const MICROSOFT_CONFIG = {
   clientId: process.env.NEXT_PUBLIC_AZURE_CLIENT_ID || '',
@@ -38,23 +41,31 @@ const MICROSOFT_CONFIG = {
 class OpsGraphAuth {
   private currentUser: AuthUser | null = null;
   private authStateListeners: ((user: AuthUser | null) => void)[] = [];
+  private initDone = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
-    // Check for existing session on load
-    this.initializeSession();
+    // Only initialize session on client side
+    if (typeof window !== 'undefined') {
+      this.initPromise = this.initializeSession()
+        .catch((err) => console.error('initializeSession failed:', err))
+        .finally(() => { this.initDone = true; });
+    }
   }
 
   private async initializeSession() {
     try {
-      // Check for stored session
-      const token = localStorage.getItem('opsgraph_token');
-      if (token) {
-        // Validate token with backend
-        const user = await this.validateToken(token);
-        if (user) {
-          this.setCurrentUser(user);
-        } else {
-          localStorage.removeItem('opsgraph_token');
+      // Check for stored session (only on client side)
+      if (typeof window !== 'undefined') {
+        const token = localStorage.getItem('opsgraph_token');
+        if (token) {
+          // Validate token with backend
+          const user = await this.validateToken(token);
+          if (user) {
+            this.setCurrentUser(user);
+          } else {
+            localStorage.removeItem('opsgraph_token');
+          }
         }
       }
     } catch (error) {
@@ -64,8 +75,7 @@ class OpsGraphAuth {
 
   private async validateToken(token: string): Promise<AuthUser | null> {
     try {
-      // TODO: Replace with actual API call to /api/auth/validate
-      const response = await fetch('/api/auth/validate', {
+      const response = await fetch(`${API_BASE_URL}/auth/validate`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -83,6 +93,12 @@ class OpsGraphAuth {
     }
   }
 
+  // Allow callers to await initialization (token validation) on first load
+  public async waitUntilInitialized(): Promise<void> {
+    if (this.initDone) return;
+    try { await this.initPromise; } catch {}
+  }
+
   private setCurrentUser(user: AuthUser | null) {
     this.currentUser = user;
     // Notify all listeners
@@ -96,11 +112,13 @@ class OpsGraphAuth {
 
   private async setSessionContext(userId: string) {
     try {
-      // TODO: This will call your backend to set SESSION_CONTEXT('user_id')
-      await fetch('/api/auth/session-context', {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('opsgraph_token') : null;
+      if (!token) return;
+
+  await fetch(`${API_BASE_URL}/auth/session-context`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('opsgraph_token')}`,
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ userId })
@@ -152,8 +170,10 @@ class OpsGraphAuth {
       const data = await response.json();
       const user = data.user as AuthUser;
       
-      // Store token and set user
-      localStorage.setItem('opsgraph_token', data.access_token);
+      // Store token and set user (only on client side)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('opsgraph_token', data.access_token);
+      }
       this.setCurrentUser(user);
       
       return { user, error: null };
@@ -165,23 +185,38 @@ class OpsGraphAuth {
   // Local Account Login
   async signInWithLocal(email: string, password: string): Promise<{ user: AuthUser | null; error: Error | null }> {
     try {
-      // TODO: Replace with actual API call to /api/auth/local/signin
-      const response = await fetch('/api/auth/local/signin', {
+      const url = `${API_BASE_URL}/auth/local/signin`;
+      console.log('Auth URL being called:', url);
+      console.log('API_BASE_URL:', API_BASE_URL);
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Login failed');
+        let message = 'Login failed';
+        try {
+          const ct = response.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const errorData = await response.json();
+            message = errorData.message || errorData.error || message;
+          } else {
+            const text = await response.text();
+            // If the response is HTML (e.g., 404 page), include first line snippet
+            message = text?.slice(0, 200) || message;
+          }
+        } catch {}
+        throw new Error(message);
       }
 
       const data = await response.json();
       const user = data.user as AuthUser;
       
-      // Store token and set user
-      localStorage.setItem('opsgraph_token', data.access_token);
+      // Store token and set user (only on client side)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('opsgraph_token', data.access_token);
+      }
       this.setCurrentUser(user);
       
       return { user, error: null };
@@ -200,10 +235,15 @@ class OpsGraphAuth {
   }): Promise<{ user: AuthUser | null; error: Error | null }> {
     try {
       // TODO: Replace with actual API call to /api/auth/local/create
+      const token = typeof window !== 'undefined' ? localStorage.getItem('opsgraph_token') : null;
+      if (!token) {
+        throw new Error('No authentication token available');
+      }
+
       const response = await fetch('/api/auth/local/create', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('opsgraph_token')}`,
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(userData)
@@ -224,28 +264,39 @@ class OpsGraphAuth {
   async signOut(): Promise<{ error: Error | null }> {
     try {
       // Call backend to invalidate session
-      await fetch('/api/auth/signout', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('opsgraph_token')}`,
-          'Content-Type': 'application/json'
-        }
-      });
+      const token = typeof window !== 'undefined' ? localStorage.getItem('opsgraph_token') : null;
+      if (token) {
+        await fetch('/api/auth/signout', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+      }
       
-      // Clear local storage and state
-      localStorage.removeItem('opsgraph_token');
+      // Clear local storage and state (only on client side)
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('opsgraph_token');
+      }
       this.setCurrentUser(null);
       
       return { error: null };
     } catch (error) {
       // Even if backend call fails, clear local state
-      localStorage.removeItem('opsgraph_token');
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('opsgraph_token');
+      }
       this.setCurrentUser(null);
       return { error: error as Error };
     }
   }
 
   async getUser(): Promise<AuthUser | null> {
+    // On the client, ensure initialization has completed before returning
+    if (typeof window !== 'undefined' && !this.initDone) {
+      await this.waitUntilInitialized();
+    }
     return this.currentUser;
   }
 
@@ -256,10 +307,15 @@ class OpsGraphAuth {
   async updateProfile(userId: string, updates: Partial<Profile>): Promise<{ error: Error | null }> {
     try {
       // TODO: Replace with actual API call to /api/users/profile
+      const token = typeof window !== 'undefined' ? localStorage.getItem('opsgraph_token') : null;
+      if (!token) {
+        throw new Error('No authentication token available');
+      }
+
       const response = await fetch(`/api/users/${userId}/profile`, {
         method: 'PATCH',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('opsgraph_token')}`,
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(updates)
@@ -346,10 +402,15 @@ class OpsGraphAuth {
   async changePassword(currentPassword: string, newPassword: string): Promise<{ error: Error | null }> {
     try {
       // TODO: Replace with actual API call
+      const token = typeof window !== 'undefined' ? localStorage.getItem('opsgraph_token') : null;
+      if (!token) {
+        throw new Error('No authentication token available');
+      }
+
       const response = await fetch('/api/auth/local/change-password', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('opsgraph_token')}`,
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ currentPassword, newPassword })

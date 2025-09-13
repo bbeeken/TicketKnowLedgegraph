@@ -13,6 +13,7 @@ CREATE OR ALTER PROCEDURE app.usp_CreateAsset
     @type NVARCHAR(60),
     @model NVARCHAR(120) = NULL,
     @vendor_id INT = NULL,
+    @vendor_name NVARCHAR(80) = NULL,
     @serial NVARCHAR(120) = NULL,
     @location NVARCHAR(200) = NULL,
     @purchase_date DATETIME2(3) = NULL,
@@ -21,14 +22,44 @@ AS
 BEGIN
     SET NOCOUNT ON;
     BEGIN TRY
+        -- Resolve vendor_name if not provided but vendor_id is
+        IF @vendor_name IS NULL AND @vendor_id IS NOT NULL
+            SELECT @vendor_name = v.name FROM app.Vendors v WHERE v.vendor_id = @vendor_id;
         IF NOT EXISTS (SELECT 1 FROM app.Assets WHERE asset_id = @asset_id)
         BEGIN
-            INSERT INTO app.Assets (asset_id, site_id, zone_id, type, model, vendor_id, serial, location, purchase_date, warranty_until, installed_at)
-            VALUES (@asset_id, @site_id, @zone_id, @type, @model, @vendor_id, @serial, @location, @purchase_date, @warranty_until, SYSUTCDATETIME());
+            -- Base schema requires 'vendor' (NVARCHAR) non-null; keep it populated alongside vendor_id
+            IF COL_LENGTH('app.Assets','vendor') IS NOT NULL
+            BEGIN
+                INSERT INTO app.Assets (asset_id, site_id, zone_id, type, model, vendor, vendor_id, serial, location, purchase_date, warranty_until, installed_at)
+                VALUES (@asset_id, @site_id, @zone_id, @type, ISNULL(@model, N''), ISNULL(@vendor_name, N'Unknown'), @vendor_id, @serial, @location, @purchase_date, @warranty_until, SYSUTCDATETIME());
+            END
+            ELSE
+            BEGIN
+                INSERT INTO app.Assets (asset_id, site_id, zone_id, type, model, vendor_id, serial, location, purchase_date, warranty_until, installed_at)
+                VALUES (@asset_id, @site_id, @zone_id, @type, @model, @vendor_id, @serial, @location, @purchase_date, @warranty_until, SYSUTCDATETIME());
+            END
         END
         ELSE
         BEGIN
-            UPDATE app.Assets SET site_id=@site_id, zone_id=@zone_id, type=@type, model=@model, vendor_id=@vendor_id, serial=@serial, location=@location, purchase_date=@purchase_date, warranty_until=@warranty_until WHERE asset_id=@asset_id;
+            IF COL_LENGTH('app.Assets','vendor') IS NOT NULL
+            BEGIN
+                UPDATE app.Assets
+                   SET site_id=@site_id,
+                       zone_id=@zone_id,
+                       type=@type,
+                       model=@model,
+                       vendor = COALESCE(@vendor_name, vendor),
+                       vendor_id=@vendor_id,
+                       serial=@serial,
+                       location=@location,
+                       purchase_date=@purchase_date,
+                       warranty_until=@warranty_until
+                 WHERE asset_id=@asset_id;
+            END
+            ELSE
+            BEGIN
+                UPDATE app.Assets SET site_id=@site_id, zone_id=@zone_id, type=@type, model=@model, vendor_id=@vendor_id, serial=@serial, location=@location, purchase_date=@purchase_date, warranty_until=@warranty_until WHERE asset_id=@asset_id;
+            END
         END
         SELECT @asset_id AS asset_id;
     END TRY

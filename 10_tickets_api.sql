@@ -11,7 +11,7 @@ CREATE OR ALTER VIEW app.vw_OpenAlertsBySite
 AS
 SELECT
     s.site_id,
-    a.alert_id,
+    al.alert_id,
     e.occurred_at AS raised_at,
     e.canonical_code AS code,
     e.level AS [level],
@@ -43,7 +43,7 @@ FROM app.Tickets t;
 GO
 
 -- Optional full-text index creation (only if full-text is available)
-IF EXISTS (SELECT 1 FROM sys.fulltext_catalogs)
+IF TRY_CONVERT(INT, SERVERPROPERTY('IsFullTextInstalled')) = 1
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM sys.fulltext_indexes fi JOIN sys.tables tb ON fi.object_id = tb.object_id WHERE tb.name = 'Tickets' AND SCHEMA_NAME(schema_id) = 'app')
     BEGIN
@@ -129,7 +129,9 @@ GO
 
 -- Procedure: Add attachment (store metadata only) — file storage handled by API server
 CREATE OR ALTER PROCEDURE app.usp_AddAttachment
-    @ticket_id INT,
+    @ticket_id INT = NULL,
+    @vendor_id INT = NULL,
+    @asset_id INT = NULL,
     @uri NVARCHAR(400),
     @kind NVARCHAR(40),
     @mime_type NVARCHAR(80),
@@ -140,13 +142,27 @@ AS
 BEGIN
     SET NOCOUNT ON;
     BEGIN TRY
-        INSERT INTO app.Attachments (ticket_id, uri, kind, mime_type, size_bytes, content_sha256, uploaded_by, created_at)
-        VALUES (@ticket_id, @uri, @kind, @mime_type, @size_bytes, @content_sha256, @uploaded_by, SYSUTCDATETIME());
+        -- require at least one target
+        IF (@ticket_id IS NULL AND @vendor_id IS NULL AND @asset_id IS NULL)
+        BEGIN
+            RAISERROR('One of ticket_id, vendor_id, or asset_id must be provided', 16, 1);
+            RETURN;
+        END
+        -- validate foreigns when provided
+        IF @ticket_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM app.Tickets WHERE ticket_id=@ticket_id)
+            RAISERROR('Invalid ticket_id', 16, 1);
+        IF @vendor_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM app.Vendors WHERE vendor_id=@vendor_id)
+            RAISERROR('Invalid vendor_id', 16, 1);
+        IF @asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM app.Assets WHERE asset_id=@asset_id)
+            RAISERROR('Invalid asset_id', 16, 1);
+
+        INSERT INTO app.Attachments (ticket_id, vendor_id, asset_id, uri, kind, mime_type, size_bytes, content_sha256, uploaded_by, created_at)
+        VALUES (@ticket_id, @vendor_id, @asset_id, @uri, @kind, @mime_type, @size_bytes, @content_sha256, @uploaded_by, SYSUTCDATETIME());
         SELECT SCOPE_IDENTITY() AS attachment_id;
     END TRY
     BEGIN CATCH
         INSERT INTO app.IntegrationErrors (source, ref_id, message, details, created_at)
-        VALUES ('usp_AddAttachment', CONVERT(NVARCHAR(64), @ticket_id), ERROR_MESSAGE(), ERROR_PROCEDURE(), SYSUTCDATETIME());
+        VALUES ('usp_AddAttachment', COALESCE(CONVERT(NVARCHAR(64), @ticket_id), CONVERT(NVARCHAR(64), @vendor_id), CONVERT(NVARCHAR(64), @asset_id)), ERROR_MESSAGE(), ERROR_PROCEDURE(), SYSUTCDATETIME());
         THROW;
     END CATCH
 END

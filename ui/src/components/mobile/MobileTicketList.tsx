@@ -22,14 +22,14 @@ export const MobileTicketList: FC = () => {
   return (
     <VStack spacing={3} align="stretch">
       {tickets.map((ticket) => (
-        <Box key={ticket.id} p={4} bg="bg.surface" borderRadius="md" boxShadow="sm">
+  <Box key={ticket.ticket_id} p={4} bg="bg.surface" borderRadius="md" boxShadow="sm">
           <HStack justify="space-between" align="start">
             <Box>
               <Text fontWeight="semibold">{ticket.summary}</Text>
               <Text fontSize="sm" color="text.secondary">{ticket.description?.slice(0, 120)}</Text>
               <HStack mt={2} spacing={3}>
-                <Badge colorScheme={ticket.priority > 3 ? 'red' : 'green'}>{ticket.status}</Badge>
-                <Text fontSize="xs" color="text.muted">{new Date(ticket.createdAt).toLocaleString()}</Text>
+    <Badge colorScheme={ticket.severity && ticket.severity > 3 ? 'red' : 'green'}>{ticket.status}</Badge>
+    <Text fontSize="xs" color="text.muted">{new Date(ticket.created_at).toLocaleString()}</Text>
               </HStack>
             </Box>
             <HStack>

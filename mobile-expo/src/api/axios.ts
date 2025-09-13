@@ -1,6 +1,6 @@
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { API_BASE_URL } from '../config/env';
-import { getAccessToken, getRefreshToken, setTokens, clearTokens } from '../auth/auth.store';
+import { getAccessToken, ensureValidToken } from '../auth/auth.store';
 
 const instance: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -15,8 +15,8 @@ function processQueue(token: string | null) {
   refreshQueue = [];
 }
 
-instance.interceptors.request.use(async (config: AxiosRequestConfig) => {
-  const token = getAccessToken();
+instance.interceptors.request.use(async (config: InternalAxiosRequestConfig): Promise<InternalAxiosRequestConfig> => {
+  const token = await ensureValidToken();
   if (token && config.headers) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -29,7 +29,7 @@ instance.interceptors.response.use(
     const originalReq = err.config;
     if (!originalReq) return Promise.reject(err);
 
-    if (err.response && err.response.status === 401 && !originalReq._retry) {
+    if (err.response && err.response.status === 401 && !(originalReq as any)._retry) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           refreshQueue.push((token: string | null) => {
@@ -42,21 +42,18 @@ instance.interceptors.response.use(
           });
         });
       }
-
-      originalReq._retry = true;
+      (originalReq as any)._retry = true;
       isRefreshing = true;
       try {
-        const refreshToken = getRefreshToken();
-        if (!refreshToken) throw new Error('No refresh token');
-        const response = await instance.post('/auth/refresh', { refreshToken });
-        const { accessToken, refreshToken: newRefresh } = response.data;
-        setTokens(accessToken, newRefresh);
-        processQueue(accessToken);
-        originalReq.headers.Authorization = `Bearer ${accessToken}`;
-        return instance(originalReq);
+        const newAccess = await ensureValidToken();
+        processQueue(newAccess);
+        if (newAccess) {
+          originalReq.headers.Authorization = `Bearer ${newAccess}`;
+          return instance(originalReq);
+        }
+        return Promise.reject(err);
       } catch (e) {
         processQueue(null);
-        clearTokens();
         return Promise.reject(e);
       } finally {
         isRefreshing = false;

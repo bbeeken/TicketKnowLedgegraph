@@ -21,11 +21,11 @@ GO
 -- Insert known monitor sources
 INSERT INTO app.MonitorSources (name, api_base_url, auth_type, auth_config, polling_interval_seconds)
 VALUES 
-('Insight360', 'https://api.insight360.com/v1', 'OAuth2', 
+('Insight360', 'https://insite360.gilbarco.com/api/v1', 'OAuth2', 
  '{"client_id": "CONFIG", "client_secret": "CONFIG", "token_url": "/oauth/token"}', 300),
 ('FranklinMonitors', 'https://api.franklinmonitors.com/api', 'ApiKey',
  '{"header_name": "X-API-Key", "key": "CONFIG"}', 300),
-('TempTicks', 'https://api.tempticks.com/v2', 'Basic',
+('TempStick', 'https://api.tempstick.com/v2', 'Basic',
  '{"username": "CONFIG", "password": "CONFIG"}', 60),
 ('TeamViewer', 'https://webapi.teamviewer.com/api/v1', 'OAuth2',
  '{"client_id": "CONFIG", "client_secret": "CONFIG", "token_url": "/oauth2/token"}', 300);

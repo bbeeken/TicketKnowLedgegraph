@@ -58,7 +58,7 @@ const MicrosoftCallbackPage: NextPage = () => {
     if (router.isReady) {
       handleCallback();
     }
-  }, [router.isReady, router.query]);
+  }, [router.isReady, router.query, router]);
 
   if (isProcessing) {
     return (

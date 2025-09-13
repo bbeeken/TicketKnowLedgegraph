@@ -2,7 +2,7 @@ import { FC } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import ReactECharts from 'echarts-for-react';
 import { Card, CardHeader, CardBody } from '@chakra-ui/react';
-import { getCofailures } from '@/lib/api/kg';
+import { getCoFailures } from '@/lib/api/kg';
 
 interface Props {
   nodeId: string;
@@ -10,9 +10,12 @@ interface Props {
 }
 
 const CofailureAnalysisChart: FC<Props> = ({ nodeId, windowMinutes = 120 }) => {
+  const siteId = parseInt(nodeId, 10);
+  
   const { data, isLoading, error } = useQuery(
     ['cofailures', nodeId, windowMinutes],
-    () => getCofailures(nodeId, windowMinutes)
+    () => getCoFailures(siteId, windowMinutes),
+    { enabled: !isNaN(siteId) }
   );
 
   if (isLoading) return <div>Loading...</div>;

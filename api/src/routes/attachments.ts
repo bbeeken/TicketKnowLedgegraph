@@ -7,7 +7,7 @@ import { cfg } from '../config';
 
 export async function registerAttachmentRoutes(fastify: FastifyInstance) {
   // Ensure upload dir exists
-  const uploadDir = cfg.uploadDir || '/data/attachments';
+  const uploadDir = cfg.uploadDir || '/tmp/attachments';
   try {
     await fs.promises.mkdir(uploadDir, { recursive: true });
   } catch (e) {

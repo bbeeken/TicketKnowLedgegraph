@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Rebuild and restart ui+api with docker compose",
+			"type": "shell",
+			"command": "docker compose down && docker compose build ui api && docker compose up -d ui api",
+			"args": []
+		},
+		{
+			"label": "Rebuild UI with new build ARG",
+			"type": "shell",
+			"command": "docker compose build ui && docker compose up -d ui",
+			"args": []
+		}
+	]
+}

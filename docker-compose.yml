@@ -1,16 +1,19 @@
-version: '3.8'
 services:
   mssql:
     image: mcr.microsoft.com/mssql/server:2019-latest
     environment:
-      SA_PASSWORD: "YourStrong!Passw0rd"
       ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+      SA_PASSWORD: "S@fePassw0rd!KG2025"
     ports:
       - "1433:1433"
     healthcheck:
-      test: ["CMD", "/opt/mssql-tools/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "YourStrong!Passw0rd", "-Q", "SELECT 1"]
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "S@fePassw0rd!KG2025", "-C", "-Q", "SELECT 1"]
       interval: 10s
       retries: 10
+    volumes:
+      - ./:/work:ro
+      - mssql_data:/var/opt/mssql
 
   api:
     build: ./api
@@ -18,10 +21,17 @@ services:
       DB_HOST: mssql
       DB_NAME: OpsGraph
       DB_USER: sa
-      DB_PASS: YourStrong!Passw0rd
-      JWT_SECRET: supersecret
+      DB_PASS: "S@fePassw0rd!KG2025"
+      DB_CONNECTION_STRING: "mssql://sa:S@fePassw0rd!KG2025@mssql:1433/OpsGraph?encrypt=true&trustServerCertificate=true"
+      JWT_SECRET: "this_is_a_very_long_local_dev_secret_please_change"
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:3002,http://ui:3000,http://localhost:19006,exp://127.0.0.1:19000,exp://localhost:19000"
     ports:
-      - "3000:3000"
+      - "3001:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       mssql:
         condition: service_healthy
@@ -29,19 +39,45 @@ services:
   worker:
     build: ./worker
     environment:
-      DB_DSN: "DRIVER={ODBC Driver 18 for SQL Server};SERVER=mssql;DATABASE=OpsGraph;UID=sa;PWD=YourStrong!Passw0rd"
+      DB_DSN: "DRIVER={ODBC Driver 18 for SQL Server};SERVER=mssql;DATABASE=OpsGraph;UID=sa;PWD=S@fePassw0rd!KG2025;TrustServerCertificate=yes"
       WEBHOOK_URL: "http://api:3000/sse/outbox"
     depends_on:
       - mssql
       - api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   alert-poller:
     build:
       context: ./worker
       dockerfile: Dockerfile.alert_poller
     environment:
-      DB_DSN: "DRIVER={ODBC Driver 18 for SQL Server};SERVER=mssql;DATABASE=OpsGraph;UID=sa;PWD=YourStrong!Passw0rd"
+      DB_DSN: "DRIVER={ODBC Driver 18 for SQL Server};SERVER=mssql;DATABASE=OpsGraph;UID=sa;PWD=S@fePassw0rd!KG2025;TrustServerCertificate=yes"
       MONITOR_POLL_INTERVAL: "60"
     depends_on:
       - mssql
     restart: unless-stopped
+
+  ui:
+    build:
+      context: ./ui
+      args:
+        NEXT_PUBLIC_API_BASE_URL: "http://localhost:3001/api"
+    environment:
+      # Use the internal docker network URL to reach the API service and include /api prefix
+      NEXT_PUBLIC_API_BASE_URL: "http://localhost:3001/api"
+    ports:
+      - "3002:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - api
+
+volumes:
+  mssql_data:

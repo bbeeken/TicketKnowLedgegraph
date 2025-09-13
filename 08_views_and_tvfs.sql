@@ -74,3 +74,36 @@ GO
 CREATE OR ALTER VIEW kg.vw_CofailAdjacent120 AS
 SELECT * FROM kg.fn_CofailAdjacent(1006, 120);
 GO
+
+-- Stub: Network Blast Radius (placeholder; to be replaced with actual logic)
+CREATE OR ALTER VIEW kg.vw_NetworkBlastRadius AS
+SELECT TOP (0)
+    CAST(NULL AS INT)    AS site_id,
+    CAST(NULL AS INT)    AS seed_asset_id,
+    CAST(NULL AS INT)    AS impacted_asset_id,
+    CAST(NULL AS TINYINT) AS hop,
+    CAST(NULL AS NVARCHAR(60)) AS relation
+FROM sys.objects;
+GO
+
+-- Stub: Power Blast Radius (placeholder; to be replaced with actual logic)
+CREATE OR ALTER VIEW kg.vw_PowerBlastRadius AS
+SELECT TOP (0)
+    CAST(NULL AS INT)    AS site_id,
+    CAST(NULL AS INT)    AS seed_asset_id,
+    CAST(NULL AS INT)    AS impacted_asset_id,
+    CAST(NULL AS TINYINT) AS hop,
+    CAST(NULL AS NVARCHAR(60)) AS relation
+FROM sys.objects;
+GO
+
+-- Stub: Food Safety Hot Cases (placeholder; to be replaced with actual logic)
+CREATE OR ALTER VIEW kg.vw_FoodSafetyHotCases AS
+SELECT TOP (0)
+    CAST(NULL AS INT)         AS site_id,
+    CAST(NULL AS INT)         AS asset_id,
+    CAST(NULL AS DATETIME2(3)) AS last_temp_time,
+    CAST(NULL AS DECIMAL(5,2)) AS last_temp_c,
+    CAST(NULL AS NVARCHAR(60)) AS status
+FROM sys.objects;
+GO

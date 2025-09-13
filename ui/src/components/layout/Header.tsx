@@ -18,10 +18,13 @@ import { SearchBar } from './SearchBar';
 import { Notifications } from './Notifications';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { SidebarContent } from './Sidebar';
+import { SystemStatus } from '../common/SystemStatus';
+import { KeyboardShortcuts, useKeyboardShortcuts } from '../common/KeyboardShortcuts';
 
 export const Header: FC = () => {
   const isMobile = useBreakpointValue({ base: true, lg: false });
   const { isOpen, onOpen, onClose } = useDisclosure();
+  const { showShortcuts, setShowShortcuts } = useKeyboardShortcuts();
 
   return (
     <Flex
@@ -49,10 +52,16 @@ export const Header: FC = () => {
       </Flex>
 
       <Flex align="center" gap={4}>
+        <SystemStatus />
         <ThemeSwitcher />
         <Notifications />
         <UserProfile />
       </Flex>
+
+      <KeyboardShortcuts 
+        isOpen={showShortcuts} 
+        onClose={() => setShowShortcuts(false)} 
+      />
 
       {isMobile && (
         <Drawer isOpen={isOpen} placement="left" onClose={onClose}>

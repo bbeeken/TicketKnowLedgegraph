@@ -1,4 +1,46 @@
-# OpsGraph Database Schema
+# OpsGraph - Enterprise Ticketing & Knowledge Graph
+
+## 🚀 Quick Start
+
+### Development
+```bash
+# Start all services
+docker-compose up -d
+
+# Apply security updates
+.\apply-security-updates.ps1
+
+# Validate security
+.\validate-security.ps1
+```
+
+### Production (Enhanced Security)
+```bash
+# Production deployment with security hardening
+docker-compose -f docker-compose.yml -f docker-compose.security.yml up -d
+```
+
+## 🔐 Security Features
+
+### Docker Security Improvements
+- **Updated Base Images**: Python 3.12-slim, Node.js 22-alpine (eliminates high vulnerabilities)
+- **Non-root Users**: All containers run as non-root users (uid 1001)
+- **Security Options**: no-new-privileges, capability dropping
+- **Read-only Filesystems**: Production containers use read-only root filesystems
+- **Build Security**: Comprehensive `.dockerignore` files prevent secret exposure
+
+### Validation
+Run `.\validate-security.ps1` to check container security settings.
+
+## 📊 Architecture
+
+- **Database**: SQL Server with knowledge graph (nodes/edges)
+- **API**: Node.js/Fastify with JWT auth and RLS
+- **UI**: Next.js with real-time updates
+- **Workers**: Python background services for alerts and ML
+- **Security**: Multi-layer security with Docker hardening
+
+## 📁 Database Schema
 
 ## How to Run Scripts
 

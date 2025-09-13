@@ -41,4 +41,5 @@ export type TicketDetail = {
   created_at?: string | null;
   updated_at?: string | null;
   rowversionBase64?: string | null;
+  type_id?: number | null;
 };

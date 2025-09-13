@@ -16,7 +16,7 @@ GO
 CREATE OR ALTER PROCEDURE app.usp_AddNextMonthPartition
 AS
 BEGIN
-    DECLARE @max DATETIME2(3) = (SELECT MAX(value) FROM sys.partition_range_values WHERE function_id = OBJECT_ID('pf_Monthly'));
+    DECLARE @max DATETIME2(3) = (SELECT MAX(CAST(value AS DATETIME2(3))) FROM sys.partition_range_values WHERE function_id = OBJECT_ID('pf_Monthly'));
     DECLARE @next DATETIME2(3) = DATEADD(MONTH, 1, @max);
     DECLARE @sql NVARCHAR(400) = N'ALTER PARTITION FUNCTION pf_Monthly() SPLIT RANGE (''' + CONVERT(NVARCHAR(30), @next, 126) + ''')';
     EXEC(@sql);

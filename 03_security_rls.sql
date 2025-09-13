@@ -26,13 +26,12 @@ WHERE IS_MEMBER('app_admin')=1
    );
 GO
 
--- Security Policy for Tickets, Events, Alerts
+-- Security Policy for Tickets, Events (Alerts excluded due to no direct site_id)
 IF NOT EXISTS (SELECT 1 FROM sys.security_policies WHERE name = 'pol_TicketAccess')
 BEGIN
     CREATE SECURITY POLICY sec.pol_TicketAccess
     ADD FILTER PREDICATE sec.fn_TicketAccessPredicate(site_id) ON app.Tickets,
-    ADD FILTER PREDICATE sec.fn_TicketAccessPredicate(site_id) ON app.Events,
-    ADD FILTER PREDICATE sec.fn_TicketAccessPredicate(site_id) ON app.Alerts
+    ADD FILTER PREDICATE sec.fn_TicketAccessPredicate(site_id) ON app.Events
     WITH (STATE = ON);
 END
 GO

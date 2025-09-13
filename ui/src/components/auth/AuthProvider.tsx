@@ -32,6 +32,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     // Initial auth check
     const checkAuth = async () => {
       try {
+  // Wait for client-side auth initialization to complete
+  await opsGraphAuth.waitUntilInitialized();
         const currentUser = await opsGraphAuth.getUser();
         setUser(currentUser);
       } catch (error) {
@@ -54,7 +56,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     if (!isLoading && !user && !isPublicPath) {
       router.push('/login');
     }
-  }, [user, isLoading, router.pathname]);
+  }, [user, isLoading, router.pathname, router]);
 
   const signOut = async () => {
     await opsGraphAuth.signOut();
@@ -99,7 +101,7 @@ export const useAuth = (): AuthContextType => {
 
 // Higher-order component for protecting routes
 export const withAuth = <P extends object>(Component: React.ComponentType<P>) => {
-  return (props: P) => {
+  const AuthenticatedComponent = (props: P) => {
     const { user, isLoading } = useAuth();
     const router = useRouter();
 
@@ -119,11 +121,14 @@ export const withAuth = <P extends object>(Component: React.ComponentType<P>) =>
 
     return <Component {...props} />;
   };
+  
+  AuthenticatedComponent.displayName = `withAuth(${Component.displayName || Component.name || 'Component'})`;
+  return AuthenticatedComponent;
 };
 
 // Higher-order component for admin-only routes
 export const withAdminAuth = <P extends object>(Component: React.ComponentType<P>) => {
-  return (props: P) => {
+  const AdminComponent = (props: P) => {
     const { user, isLoading, hasAdminAccess } = useAuth();
     const [isAdmin, setIsAdmin] = useState(false);
     const [adminCheckLoading, setAdminCheckLoading] = useState(true);
@@ -159,4 +164,7 @@ export const withAdminAuth = <P extends object>(Component: React.ComponentType<P
 
     return <Component {...props} />;
   };
+  
+  AdminComponent.displayName = `withAdminAuth(${Component.displayName || Component.name || 'Component'})`;
+  return AdminComponent;
 };

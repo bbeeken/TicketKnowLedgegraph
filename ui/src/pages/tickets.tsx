@@ -1,10 +1,10 @@
 import { AppLayout } from '@/components/layout/AppLayout';
-import BeautifulTicketList from '@/components/tickets/BeautifulTicketList';
+import { EnhancedTicketList } from '@/components/tickets/EnhancedTicketList';
 
 export default function TicketsPage() {
   return (
     <AppLayout>
-      <BeautifulTicketList />
+      <EnhancedTicketList showCreateButton={true} />
     </AppLayout>
   );
 }

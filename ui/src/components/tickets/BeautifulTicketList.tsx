@@ -20,6 +20,7 @@ import {
   CheckCircleIcon 
 } from '@heroicons/react/24/outline';
 import { motion } from 'framer-motion';
+import { useRouter } from 'next/router';
 
 const MotionBox = motion(Box);
 
@@ -79,6 +80,7 @@ const getPriorityIcon = (priority: number) => {
 export const BeautifulTicketList: FC = () => {
   const cardBg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.100', 'gray.700');
+  const router = useRouter();
 
   return (
     <VStack spacing={6} align="stretch">
@@ -148,6 +150,7 @@ export const BeautifulTicketList: FC = () => {
                     size="sm"
                     color="gray.400"
                     _hover={{ color: 'brand.500', bg: 'brand.50' }}
+                    onClick={() => router.push(`/tickets/${ticket.id}`)}
                   />
                 </Flex>
 

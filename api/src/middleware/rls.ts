@@ -1,12 +1,15 @@
 import { FastifyRequest } from 'fastify';
-import { RequestWithSql } from '../db/sql';
+import { RequestWithSql, SQL_CONN_SYMBOL, RequestSqlConnection } from '../db/sql';
+import * as sql from 'mssql';
 
 /**
  * Extract request context for RLS operations
  * This function provides a bridge between Fastify request and SQL context
  */
-export function getRequestFromContext(request: FastifyRequest): RequestWithSql {
-  return request as RequestWithSql;
+export function getRequestFromContext(request: FastifyRequest): sql.Request | null {
+  const req = request as RequestWithSql;
+  const conn = req[SQL_CONN_SYMBOL] as RequestSqlConnection | undefined;
+  return conn ? conn.request() : null;
 }
 
 /**

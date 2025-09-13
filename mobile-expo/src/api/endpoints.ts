@@ -47,3 +47,24 @@ export async function patchTicket(id: number, payload: any, etag?: string) {
   const res = await axios.patch(`/tickets/${id}`, payload, { headers });
   return res;
 }
+
+// Messaging & types (mobile)
+export async function getTicketMessages(id: number, offset = 0, limit = 50) {
+  const res = await axios.get(`/tickets/${id}/messages`, { params: { offset, limit } });
+  return res.data;
+}
+
+export async function postTicketMessage(id: number, body: string) {
+  const res = await axios.post(`/tickets/${id}/messages`, { content_format: 'text', body });
+  return res.data;
+}
+
+export async function patchTicketType(id: number, type_id: number) {
+  const res = await axios.patch(`/tickets/${id}/type`, { type_id });
+  return res.data;
+}
+
+export async function upsertVendorServiceRequest(id: number, payload: any) {
+  const res = await axios.post(`/tickets/${id}/service-request`, payload);
+  return res.data;
+}

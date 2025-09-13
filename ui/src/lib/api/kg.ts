@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { apiFetch } from './client';
 
 export const knowledgeGraphNodeSchema = z.object({
   id: z.string(),
@@ -36,41 +37,80 @@ export async function getKnowledgeGraph(filters: GraphFilters = {}) {
     if (value) params.append(key, value.toString());
   });
   
-  const response = await fetch(`/api/kg/graph?${params}`);
-  if (!response.ok) throw new Error('Failed to fetch knowledge graph');
-  
-  const data = await response.json();
+  const data = await apiFetch(`/api/kg/graph?${params}`);
   return knowledgeGraphSchema.parse(data);
 }
 
 export async function getNodeDetails(nodeId: string) {
-  const response = await fetch(`/api/kg/nodes/${nodeId}`);
-  if (!response.ok) throw new Error('Failed to fetch node details');
-  
-  const data = await response.json();
-  return knowledgeGraphNodeSchema.parse(data);
+  const data = await apiFetch(`/api/kg/nodes/${nodeId}`);
+  return data;
 }
 
-export async function getNodeNeighbors(nodeId: string, depth: number = 1) {
-  const response = await fetch(`/api/kg/nodes/${nodeId}/neighbors?depth=${depth}`);
-  if (!response.ok) throw new Error('Failed to fetch node neighbors');
-  
-  const data = await response.json();
-  return knowledgeGraphSchema.parse(data);
+// Advanced KG API functions
+class KGApi {
+  private baseUrl = '/api/kg';
+
+  async getFullGraph() {
+    return apiFetch(`${this.baseUrl}`);
+  }
+
+  async getSiteGraph(siteId: number) {
+    return apiFetch(`${this.baseUrl}/nodes?siteId=${siteId}`);
+  }
+
+  async getTicketGraph(ticketId: number) {
+    return apiFetch(`${this.baseUrl}/ticket/${ticketId}/context`);
+  }
+
+  async getAssetNeighborhood(assetId: number, depth: number = 2) {
+    return apiFetch(`${this.baseUrl}/neighbors/${assetId}?type=Asset&depth=${depth}`);
+  }
+
+  async getBlastRadius(assetId: number, type: 'network' | 'power' | 'both' = 'both', maxHops: number = 3) {
+    return apiFetch(`${this.baseUrl}/blast-radius/${assetId}?type=${type}&maxHops=${maxHops}`);
+  }
+
+  async getCentrality(siteId?: number) {
+    const url = siteId 
+      ? `${this.baseUrl}/centrality?siteId=${siteId}`
+      : `${this.baseUrl}/centrality`;
+    return apiFetch(url);
+  }
+
+  async getCoFailures(siteId: number, windowMinutes: number = 120, minOccurrences: number = 2) {
+    return apiFetch(`${this.baseUrl}/co-failure/${siteId}?windowMinutes=${windowMinutes}&minOccurrences=${minOccurrences}`);
+  }
+
+  async getAdvancedAnalytics() {
+    return apiFetch(`${this.baseUrl}/advanced-analytics`);
+  }
+
+  async getGraphAnalytics() {
+    return apiFetch(`${this.baseUrl}/analytics`);
+  }
+
+  async semanticSearch(query: string, entityType: string = 'asset', limit: number = 20) {
+    return apiFetch(`${this.baseUrl}/semantic-search?q=${encodeURIComponent(query)}&type=${entityType}&limit=${limit}`);
+  }
 }
 
-export async function getBlastRadius(nodeId: string, type: 'network' | 'power' | 'food-safety') {
-  const response = await fetch(`/api/kg/nodes/${nodeId}/blast-radius?type=${type}`);
-  if (!response.ok) throw new Error('Failed to fetch blast radius');
-  
-  const data = await response.json();
-  return knowledgeGraphSchema.parse(data);
-}
+export const kgApi = new KGApi();
 
-export async function getCofailures(nodeId: string, windowMinutes: number = 120) {
-  const response = await fetch(`/api/kg/nodes/${nodeId}/cofailures?window=${windowMinutes}`);
-  if (!response.ok) throw new Error('Failed to fetch co-failures');
-  
-  const data = await response.json();
-  return knowledgeGraphSchema.parse(data);
-}
+// Export standalone functions for backward compatibility
+export const getBlastRadius = (assetId: number, type: 'network' | 'power' | 'both' = 'both', maxHops: number = 3) => 
+  kgApi.getBlastRadius(assetId, type, maxHops);
+
+export const getCentrality = (siteId?: number) => 
+  kgApi.getCentrality(siteId);
+
+export const getCoFailures = (siteId: number, windowMinutes: number = 120, minOccurrences: number = 2) => 
+  kgApi.getCoFailures(siteId, windowMinutes, minOccurrences);
+
+export const getAdvancedAnalytics = () => 
+  kgApi.getAdvancedAnalytics();
+
+export const getGraphAnalytics = () => 
+  kgApi.getGraphAnalytics();
+
+export const semanticSearch = (query: string, entityType: string = 'asset', limit: number = 20) => 
+  kgApi.semanticSearch(query, entityType, limit);

@@ -34,12 +34,57 @@ GO
 IF OBJECT_ID('app.Categories','U') IS NULL
 CREATE TABLE app.Categories (
     category_id INT IDENTITY(1,1) PRIMARY KEY,
-    name NVARCHAR(60) NOT NULL UNIQUE
+    name NVARCHAR(100) NOT NULL UNIQUE,
+    slug NVARCHAR(100) NOT NULL UNIQUE,
+    domain NVARCHAR(60) NULL
 );
 GO
 IF NOT EXISTS (SELECT 1 FROM app.Categories)
-INSERT INTO app.Categories (name) VALUES
-('Network/ATG'),('Dispenser/Flow'),('POS/Payments');
+INSERT INTO app.Categories (name, slug, domain) VALUES
+('Network/ATG','network-atg','Network'),
+('Dispenser/Flow','dispenser-flow','Fuel'),
+('POS/Payments','pos-payments','POS');
+GO
+
+-- Substatuses
+IF OBJECT_ID('app.Substatuses','U') IS NULL
+CREATE TABLE app.Substatuses (
+    substatus_id INT IDENTITY(1,1) PRIMARY KEY,
+    substatus_code NVARCHAR(60) NOT NULL UNIQUE,
+    substatus_name NVARCHAR(120) NOT NULL,
+    status NVARCHAR(30) NOT NULL,
+    sort_order TINYINT NOT NULL DEFAULT 1,
+    is_active BIT NOT NULL DEFAULT 1,
+    CONSTRAINT FK_Substatuses_Status FOREIGN KEY(status) REFERENCES app.Statuses(status)
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM app.Substatuses WHERE substatus_code = 'awaiting_assignment')
+INSERT INTO app.Substatuses (substatus_code, substatus_name, status, sort_order) VALUES
+-- Open substatuses
+('awaiting_assignment', 'Awaiting Assignment', 'Open', 1),
+('awaiting_review', 'Awaiting Review', 'Open', 2),
+('awaiting_approval', 'Awaiting Approval', 'Open', 3),
+-- In Progress substatuses
+('researching', 'Researching', 'In Progress', 1),
+('implementing', 'Implementing', 'In Progress', 2),
+('testing', 'Testing', 'In Progress', 3),
+('documenting', 'Documenting', 'In Progress', 4),
+-- Pending substatuses
+('vendor_response', 'Awaiting Vendor Response', 'Pending', 1),
+('customer_response', 'Awaiting Customer Response', 'Pending', 2),
+('parts_delivery', 'Awaiting Parts Delivery', 'Pending', 3),
+('scheduled_maintenance', 'Scheduled Maintenance', 'Pending', 4),
+-- Resolved substatuses
+('solution_implemented', 'Solution Implemented', 'Resolved', 1),
+('workaround_provided', 'Workaround Provided', 'Resolved', 2),
+('duplicate_closed', 'Duplicate - Closed', 'Resolved', 3),
+-- Closed substatuses
+('verified_resolved', 'Verified Resolved', 'Closed', 1),
+('customer_satisfied', 'Customer Satisfied', 'Closed', 2),
+-- Canceled substatuses
+('request_withdrawn', 'Request Withdrawn', 'Canceled', 1),
+('duplicate_request', 'Duplicate Request', 'Canceled', 2),
+('not_reproducible', 'Not Reproducible', 'Canceled', 3);
 GO
 
 -- Visibilities
@@ -118,6 +163,8 @@ IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Tickets_Severity'
 ALTER TABLE app.Tickets ADD CONSTRAINT FK_Tickets_Severity FOREIGN KEY (severity) REFERENCES app.Severities(severity);
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Tickets_Category')
 ALTER TABLE app.Tickets ADD CONSTRAINT FK_Tickets_Category FOREIGN KEY (category_id) REFERENCES app.Categories(category_id);
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Tickets_Substatus')
+ALTER TABLE app.Tickets ADD CONSTRAINT FK_Tickets_Substatus FOREIGN KEY (substatus_code) REFERENCES app.Substatuses(substatus_code);
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_TicketComments_Visibility')
 ALTER TABLE app.TicketComments ADD CONSTRAINT FK_TicketComments_Visibility FOREIGN KEY (visibility) REFERENCES app.Visibilities(name);
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_TicketLinks_Kind')

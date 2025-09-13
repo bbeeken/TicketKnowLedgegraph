@@ -343,8 +343,8 @@ const zIndices = {
 };
 
 const config = {
-  initialColorMode: 'system',
-  useSystemColorMode: true,
+  initialColorMode: 'light',
+  useSystemColorMode: false,
 };
 
 export const theme = extendTheme({

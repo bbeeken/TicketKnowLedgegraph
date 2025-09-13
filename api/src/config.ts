@@ -37,5 +37,5 @@ export const cfg = {
   rateLimitMax: Number(parsed.data.RATE_LIMIT_MAX || 100),
   corsOrigins: parsed.data.CORS_ORIGINS ? parsed.data.CORS_ORIGINS.split(',') : ['http://localhost:3000'],
   sseEnabled: (parsed.data.SSE_ENABLED || 'true') === 'true',
-  uploadDir: parsed.data.UPLOAD_DIR || '/data/attachments',
+  uploadDir: parsed.data.UPLOAD_DIR || '/tmp/attachments',
 };

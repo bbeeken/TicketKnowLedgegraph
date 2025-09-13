@@ -1,0 +1,151 @@
+import { NextApiRequest, NextApiResponse } from 'next';
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    // Mock implementation - in real app, verify against database
+    if (email === 'admin@heinzcorps.com' && password === 'admin123') {
+      const mockUser = {
+        id: 'admin-001',
+        email: 'admin@heinzcorps.com',
+        full_name: 'System Administrator',
+        auth_provider: 'local',
+        profile: {
+          is_admin: true,
+          role: 'admin',
+          site_ids: [1000, 1001, 1002, 1006, 1009, 1021, 2000], // Admin has access to all Coffee Cup Travel Plaza stores
+          avatar_url: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+      };
+
+      const accessToken = 'mock_jwt_token_admin_' + Date.now();
+
+      return res.status(200).json({
+        user: mockUser,
+        access_token: accessToken,
+        message: 'Login successful'
+      });
+    }
+
+    // Mock for Vermillion site manager
+    if (email === 'manager@vermillion.com' && password === 'vermillion123') {
+      const mockUser = {
+        id: 'manager-vermillion',
+        email: 'manager@vermillion.com',
+        full_name: 'Vermillion Site Manager',
+        auth_provider: 'local',
+        profile: {
+          is_admin: false,
+          role: 'manager',
+          site_ids: [1006], // Only access to Vermillion site (Store ID: 1006)
+          avatar_url: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+      };
+
+      const accessToken = 'mock_jwt_token_vermillion_' + Date.now();
+
+      return res.status(200).json({
+        user: mockUser,
+        access_token: accessToken,
+        message: 'Login successful'
+      });
+    }
+
+    // Mock for Steele site technician
+    if (email === 'tech@steele.com' && password === 'steele123') {
+      const mockUser = {
+        id: 'tech-steele',
+        email: 'tech@steele.com',
+        full_name: 'Steele Site Technician',
+        auth_provider: 'local',
+        profile: {
+          is_admin: false,
+          role: 'technician',
+          site_ids: [1002], // Only access to Steele site (Store ID: 1002)
+          avatar_url: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+      };
+
+      const accessToken = 'mock_jwt_token_steele_' + Date.now();
+
+      return res.status(200).json({
+        user: mockUser,
+        access_token: accessToken,
+        message: 'Login successful'
+      });
+    }
+
+    // Mock for Hot Springs site manager
+    if (email === 'manager@hotsprings.com' && password === 'hotsprings123') {
+      const mockUser = {
+        id: 'manager-hotsprings',
+        email: 'manager@hotsprings.com',
+        full_name: 'Hot Springs Site Manager',
+        auth_provider: 'local',
+        profile: {
+          is_admin: false,
+          role: 'manager',
+          site_ids: [1009], // Only access to Hot Springs site (Store ID: 1009)
+          avatar_url: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+      };
+
+      const accessToken = 'mock_jwt_token_hotsprings_' + Date.now();
+
+      return res.status(200).json({
+        user: mockUser,
+        access_token: accessToken,
+        message: 'Login successful'
+      });
+    }
+
+    // Mock for Summit site technician
+    if (email === 'tech@summit.com' && password === 'summit123') {
+      const mockUser = {
+        id: 'tech-summit',
+        email: 'tech@summit.com',
+        full_name: 'Summit Site Technician',
+        auth_provider: 'local',
+        profile: {
+          is_admin: false,
+          role: 'technician',
+          site_ids: [1001], // Only access to Summit site (Store ID: 1001)
+          avatar_url: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+      };
+
+      const accessToken = 'mock_jwt_token_summit_' + Date.now();
+
+      return res.status(200).json({
+        user: mockUser,
+        access_token: accessToken,
+        message: 'Login successful'
+      });
+    }
+
+    return res.status(401).json({ error: 'Invalid email or password' });
+
+  } catch (error) {
+    console.error('Local signin error:', error);
+    return res.status(500).json({ error: 'Authentication failed' });
+  }
+}

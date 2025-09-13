@@ -27,53 +27,32 @@ BEGIN
     DECLARE @assignee_user_id INT = TRY_CAST(JSON_VALUE(@j,'$.assignee_user_id') AS INT);
     DECLARE @team_id INT = TRY_CAST(JSON_VALUE(@j,'$.team_id') AS INT);
     DECLARE @vendor_id INT = TRY_CAST(JSON_VALUE(@j,'$.vendor_id') AS INT);
+  DECLARE @type_id INT = TRY_CAST(JSON_VALUE(@j,'$.type_id') AS INT);
     DECLARE @due_at DATETIME2(3) = TRY_CAST(JSON_VALUE(@j,'$.due_at') AS DATETIME2(3));
     DECLARE @sla_plan_id INT = TRY_CAST(JSON_VALUE(@j,'$.sla_plan_id') AS INT);
     DECLARE @asset_ids NVARCHAR(MAX) = JSON_QUERY(@j,'$.asset_ids');
 
     IF @ticket_id IS NULL
     BEGIN
-      -- Insert canonical ticket into app.Tickets (system of record)
-      INSERT INTO app.Tickets (status, severity, category_id, summary, description, site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id, created_at, updated_at)
-      VALUES (@status, ISNULL(@severity,0), @category_id, @summary, @description, @site_id, @created_by, @assignee_user_id, @team_id, @vendor_id, @due_at, @sla_plan_id, SYSUTCDATETIME(), SYSUTCDATETIME());
+      -- Insert canonical ticket into app.Tickets (system of record); trigger will populate TicketMaster
+  INSERT INTO app.Tickets (status, severity, category_id, summary, description, site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id, type_id, created_at, updated_at, substatus_code)
+  VALUES (@status, ISNULL(@severity,0), @category_id, @summary, @description, @site_id, @created_by, @assignee_user_id, @team_id, @vendor_id, @due_at, @sla_plan_id, @type_id, SYSUTCDATETIME(), SYSUTCDATETIME(), @substatus_code);
       SET @ticket_id = SCOPE_IDENTITY();
-
-      -- Insert into TicketMaster
-      INSERT INTO app.TicketMaster (ticket_id, ticket_no, external_ref, type_id, category_id, status, substatus_code, priority, severity, summary, description, site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id, created_at, updated_at)
-      VALUES (@ticket_id, CONCAT('OG-', FORMAT(@ticket_id,'D7')), NULL, NULL, @category_id, @status, @substatus_code, NULL, @severity, @summary, @description, @site_id, @created_by, @assignee_user_id, @team_id, @vendor_id, @due_at, @sla_plan_id, SYSUTCDATETIME(), SYSUTCDATETIME());
     END
     ELSE
     BEGIN
-      -- Update path: enforce optimistic concurrency if expected_rowversion provided
+      -- Update path: enforce optimistic concurrency if expected_rowversion provided (check TicketMaster rowversion)
       IF @expected_rowversion IS NOT NULL
       BEGIN
-        UPDATE app.TicketMaster
-        SET status = @status,
-            substatus_code = @substatus_code,
-            severity = @severity,
-            category_id = @category_id,
-            summary = @summary,
-            description = @description,
-            site_id = @site_id,
-            assignee_user_id = @assignee_user_id,
-            team_id = @team_id,
-            vendor_id = @vendor_id,
-            due_at = @due_at,
-            sla_plan_id = @sla_plan_id,
-            updated_at = SYSUTCDATETIME()
-        WHERE ticket_id = @ticket_id AND rowversion = @expected_rowversion;
-
-        IF @@ROWCOUNT = 0
+        IF NOT EXISTS (SELECT 1 FROM app.TicketMaster WHERE ticket_id=@ticket_id AND rowversion=@expected_rowversion)
         BEGIN
           ROLLBACK TRAN;
           THROW 51000, 'Rowversion mismatch (concurrency)', 1;
         END
       END
-      ELSE
-      BEGIN
-        UPDATE app.TicketMaster
+
+      UPDATE app.Tickets
         SET status = @status,
-            substatus_code = @substatus_code,
             severity = @severity,
             category_id = @category_id,
             summary = @summary,
@@ -82,28 +61,82 @@ BEGIN
             assignee_user_id = @assignee_user_id,
             team_id = @team_id,
             vendor_id = @vendor_id,
+            type_id = @type_id,
             due_at = @due_at,
             sla_plan_id = @sla_plan_id,
+            substatus_code = @substatus_code,
             updated_at = SYSUTCDATETIME()
-        WHERE ticket_id = @ticket_id;
-      END
+      WHERE ticket_id = @ticket_id;
     END
 
-    -- Record history
-    INSERT INTO app.TicketHistory (ticket_id, change_type, old_value, new_value, changed_by, changed_at, metadata)
-    VALUES (@ticket_id, 'upsert', NULL, @payload, @created_by, SYSUTCDATETIME(), @payload);
+  -- Force sync into TicketMaster via MERGE (idempotent, independent of trigger)
+  MERGE app.TicketMaster AS tgt
+  USING (
+    SELECT t.ticket_id,
+         t.ticket_no,
+         t.external_ref,
+         t.status,
+         t.substatus_code,
+         t.severity,
+         t.summary,
+         t.description,
+         t.site_id,
+         t.created_by,
+         t.assignee_user_id,
+         t.team_id,
+         t.vendor_id,
+         t.due_at,
+         t.sla_plan_id,
+         t.created_at,
+         t.updated_at
+    FROM app.Tickets t WHERE t.ticket_id = @ticket_id
+  ) AS src
+    ON tgt.ticket_id = src.ticket_id
+  WHEN MATCHED THEN UPDATE SET
+    status = src.status,
+    substatus_code = src.substatus_code,
+    severity = src.severity,
+    summary = src.summary,
+    description = src.description,
+    site_id = src.site_id,
+    assignee_user_id = src.assignee_user_id,
+    team_id = src.team_id,
+    vendor_id = src.vendor_id,
+    due_at = src.due_at,
+    sla_plan_id = src.sla_plan_id,
+    updated_at = src.updated_at
+  WHEN NOT MATCHED THEN INSERT (ticket_id, ticket_no, external_ref, status, substatus_code, priority, severity, summary, description, site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id, created_at, updated_at)
+  VALUES (src.ticket_id, src.ticket_no, src.external_ref, src.status, src.substatus_code, NULL, src.severity, src.summary, src.description, src.site_id, src.created_by, src.assignee_user_id, src.team_id, src.vendor_id, src.due_at, src.sla_plan_id, src.created_at, src.updated_at);
 
-    -- TicketAssets: sync list (simple approach: delete then insert)
+    -- Record history (guard against rare missing master row in bootstrap scenarios)
+    IF NOT EXISTS (SELECT 1 FROM app.TicketMaster WHERE ticket_id=@ticket_id)
+    BEGIN
+      -- Retry merge once more
+      MERGE app.TicketMaster AS tgt
+      USING (SELECT t.ticket_id, t.ticket_no, t.external_ref, t.status, t.substatus_code, t.severity, t.summary, t.description, t.site_id, t.created_by, t.assignee_user_id, t.team_id, t.vendor_id, t.due_at, t.sla_plan_id, t.created_at, t.updated_at FROM app.Tickets t WHERE t.ticket_id=@ticket_id) AS src
+        ON tgt.ticket_id = src.ticket_id
+      WHEN NOT MATCHED THEN INSERT (ticket_id, ticket_no, external_ref, status, substatus_code, priority, severity, summary, description, site_id, created_by, assignee_user_id, team_id, vendor_id, due_at, sla_plan_id, created_at, updated_at)
+      VALUES (src.ticket_id, src.ticket_no, src.external_ref, src.status, src.substatus_code, NULL, src.severity, src.summary, src.description, src.site_id, src.created_by, src.assignee_user_id, src.team_id, src.vendor_id, src.due_at, src.sla_plan_id, src.created_at, src.updated_at);
+    END
+    IF EXISTS (SELECT 1 FROM app.TicketMaster WHERE ticket_id=@ticket_id)
+    BEGIN
+      BEGIN TRY
+        INSERT INTO app.TicketHistory (ticket_id, change_type, old_value, new_value, changed_by, changed_at, metadata)
+        VALUES (@ticket_id, 'upsert', NULL, @payload, @created_by, SYSUTCDATETIME(), @payload);
+      END TRY
+      BEGIN CATCH
+        -- Ignore FK errors (547) during bootstrap so ticket creation still succeeds
+        IF ERROR_NUMBER() <> 547 THROW;
+      END CATCH
+    END
+
+    -- TicketAssets: sync list (simple approach: delete then insert set-based)
     IF @asset_ids IS NOT NULL
     BEGIN
       DELETE FROM app.TicketAssets WHERE ticket_id = @ticket_id;
-      DECLARE @i INT = 0, @n INT = (SELECT COUNT(*) FROM OPENJSON(@asset_ids));
-      WHILE @i < @n
-      BEGIN
-        DECLARE @aid INT = (SELECT value FROM OPENJSON(@asset_ids) WITH (value INT '$') WHERE [key] = CAST(@i AS NVARCHAR));
-        INSERT INTO app.TicketAssets (ticket_id, asset_id) VALUES (@ticket_id, @aid);
-        SET @i = @i + 1;
-      END
+      INSERT INTO app.TicketAssets (ticket_id, asset_id)
+      SELECT @ticket_id, TRY_CAST([value] AS INT)
+      FROM OPENJSON(@asset_ids);
     END
 
     -- Outbox: enqueue event for worker
@@ -120,6 +153,131 @@ BEGIN
     DECLARE @err_msg NVARCHAR(4000) = ERROR_MESSAGE();
     INSERT INTO app.IntegrationErrors (source, ref_id, message, details, created_at)
     VALUES ('usp_CreateOrUpdateTicket_v2', CONVERT(NVARCHAR(64), ISNULL(CAST(@ticket_id AS NVARCHAR(64)),'')), @err_msg, ERROR_PROCEDURE(), SYSUTCDATETIME());
+    THROW;
+  END CATCH
+END
+GO
+
+-- Upsert Vendor (basic + optional contact/contract)
+CREATE OR ALTER PROCEDURE app.usp_UpsertVendor
+  @payload NVARCHAR(MAX)
+AS
+BEGIN
+  SET NOCOUNT ON;
+  BEGIN TRY
+    DECLARE @j NVARCHAR(MAX) = @payload;
+    DECLARE @vendor_id INT = TRY_CAST(JSON_VALUE(@j,'$.vendor_id') AS INT);
+    DECLARE @name NVARCHAR(80) = JSON_VALUE(@j,'$.name');
+    DECLARE @contact_email NVARCHAR(120) = JSON_VALUE(@j,'$.contact_email');
+    DECLARE @phone NVARCHAR(40) = JSON_VALUE(@j,'$.phone');
+
+    IF @vendor_id IS NULL
+    BEGIN
+      IF EXISTS (SELECT 1 FROM app.Vendors WHERE name=@name)
+        SELECT @vendor_id = vendor_id FROM app.Vendors WHERE name=@name;
+      ELSE
+      BEGIN
+        INSERT INTO app.Vendors(name, contact_email, phone) VALUES(@name, @contact_email, @phone);
+        SET @vendor_id = SCOPE_IDENTITY();
+      END
+    END
+    ELSE
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM app.Vendors WHERE vendor_id=@vendor_id)
+      BEGIN
+        INSERT INTO app.Vendors(vendor_id, name, contact_email, phone) VALUES(@vendor_id, @name, @contact_email, @phone);
+      END
+      ELSE
+      BEGIN
+        UPDATE app.Vendors SET name=@name, contact_email=@contact_email, phone=@phone WHERE vendor_id=@vendor_id;
+      END
+    END
+
+    -- Optional contact
+    DECLARE @contact NVARCHAR(MAX) = JSON_QUERY(@j,'$.contact');
+    IF @contact IS NOT NULL AND EXISTS (SELECT 1 FROM sys.tables WHERE name='VendorContacts' AND schema_id = SCHEMA_ID('app'))
+    BEGIN
+      INSERT INTO app.VendorContacts(vendor_id, name, email, phone, role)
+      SELECT @vendor_id,
+             JSON_VALUE(@contact,'$.name'),
+             JSON_VALUE(@contact,'$.email'),
+             JSON_VALUE(@contact,'$.phone'),
+             JSON_VALUE(@contact,'$.role');
+    END
+
+    -- Optional contract
+    DECLARE @contract NVARCHAR(MAX) = JSON_QUERY(@j,'$.contract');
+    IF @contract IS NOT NULL AND EXISTS (SELECT 1 FROM sys.tables WHERE name='VendorContracts' AND schema_id = SCHEMA_ID('app'))
+    BEGIN
+      INSERT INTO app.VendorContracts(vendor_id, name, start_date, end_date, notes)
+      SELECT @vendor_id,
+             JSON_VALUE(@contract,'$.name'),
+             TRY_CAST(JSON_VALUE(@contract,'$.start_date') AS DATETIME2(3)),
+             TRY_CAST(JSON_VALUE(@contract,'$.end_date') AS DATETIME2(3)),
+             JSON_VALUE(@contract,'$.notes');
+    END
+
+    SELECT @vendor_id AS vendor_id;
+  END TRY
+  BEGIN CATCH
+    INSERT INTO app.IntegrationErrors (source, ref_id, message, details, created_at)
+    VALUES ('usp_UpsertVendor', NULL, ERROR_MESSAGE(), ERROR_PROCEDURE(), SYSUTCDATETIME());
+    THROW;
+  END CATCH
+END
+GO
+
+-- Assign Ticket to user/team
+CREATE OR ALTER PROCEDURE app.usp_AssignTicket
+  @payload NVARCHAR(MAX)
+AS
+BEGIN
+  SET NOCOUNT ON;
+  BEGIN TRY
+    BEGIN TRAN;
+    DECLARE @j NVARCHAR(MAX) = @payload;
+    DECLARE @ticket_id INT = TRY_CAST(JSON_VALUE(@j,'$.ticket_id') AS INT);
+    DECLARE @user_id INT = TRY_CAST(JSON_VALUE(@j,'$.user_id') AS INT);
+    DECLARE @team_id INT = TRY_CAST(JSON_VALUE(@j,'$.team_id') AS INT);
+    DECLARE @assigned_by INT = TRY_CAST(JSON_VALUE(@j,'$.assigned_by') AS INT);
+
+    IF @ticket_id IS NULL OR (@user_id IS NULL AND @team_id IS NULL)
+    BEGIN
+      -- Parameter validation failure
+      RAISERROR('ticket_id and (user_id or team_id) required', 16, 1);
+      ROLLBACK TRAN;
+      RETURN;
+    END
+
+    INSERT INTO app.TicketAssignments(ticket_id, user_id, team_id, assigned_by)
+    VALUES(@ticket_id, @user_id, @team_id, @assigned_by);
+
+    -- Update SoR and master
+    UPDATE app.Tickets
+      SET assignee_user_id = @user_id,
+          team_id = @team_id,
+          updated_at = SYSUTCDATETIME()
+      WHERE ticket_id = @ticket_id;
+
+    UPDATE app.TicketMaster
+      SET assignee_user_id = @user_id,
+          team_id = @team_id,
+          updated_at = SYSUTCDATETIME()
+      WHERE ticket_id = @ticket_id;
+
+    INSERT INTO app.TicketHistory(ticket_id, change_type, old_value, new_value, changed_by, metadata)
+    VALUES(@ticket_id, 'assignment', NULL, NULL, @assigned_by, @payload);
+
+    INSERT INTO app.Outbox(aggregate, aggregate_id, type, payload)
+    VALUES('ticket', CAST(@ticket_id AS NVARCHAR(64)), 'ticket.assigned', @payload);
+
+  COMMIT TRAN;
+    SELECT @ticket_id AS ticket_id;
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRAN;
+    INSERT INTO app.IntegrationErrors (source, ref_id, message, details, created_at)
+    VALUES ('usp_AssignTicket', NULL, ERROR_MESSAGE(), ERROR_PROCEDURE(), SYSUTCDATETIME());
     THROW;
   END CATCH
 END

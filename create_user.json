@@ -1,0 +1,7 @@
+{
+  "email": "admin@test.com",
+  "password": "admin123",
+  "full_name": "Admin User",
+  "site_ids": [1],
+  "role": "manager"
+}

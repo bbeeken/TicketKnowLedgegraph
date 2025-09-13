@@ -10,7 +10,7 @@
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "types": ["react-native", "jest"]
+  "types": ["react-native", "jest", "node"]
   },
   "exclude": ["node_modules", "__tests__/*"]
 }

@@ -16,7 +16,7 @@ export default fp(async function sessionContext(fastify: FastifyInstance) {
       await tx.begin();
       const req = tx.request();
       req.input('key', mssql.NVarChar, 'user_id');
-      req.input('value', mssql.NVarChar, userId);
+      req.input('value', mssql.NVarChar, String(userId));
       // set session context on the connection used by this transaction
       await req.execute('sys.sp_set_session_context');
       // attach transaction/connection to request for handlers to use

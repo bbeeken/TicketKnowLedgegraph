@@ -1,7 +1,7 @@
 import { NextPage } from 'next';
 import { useRouter } from 'next/router';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
-import { AssetDetails } from '@/components/assets/AssetDetails';
+import AssetEditPage from '@/components/assets/AssetEditPage';
 
 const AssetDetailsPage: NextPage = () => {
   const router = useRouter();
@@ -9,7 +9,7 @@ const AssetDetailsPage: NextPage = () => {
 
   return (
     <DashboardLayout>
-      <AssetDetails />
+      <AssetEditPage assetId={id ? Number(id) : undefined} />
     </DashboardLayout>
   );
 };

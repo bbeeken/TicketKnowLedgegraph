@@ -1,0 +1,34 @@
+# UI-specific Docker ignore
+../.git
+../README.md
+../docs/
+../api/
+../worker/
+../mobile-expo/
+../migrations/
+../*.sql
+
+# Development files
+cypress/
+__tests__/
+*.test.tsx
+*.spec.tsx
+jest.config.js
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Next.js
+.next/
+out/
+
+# Environment
+.env*
+!.env.example
+
+# IDE
+.vscode/
+.idea/

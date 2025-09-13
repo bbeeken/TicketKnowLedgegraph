@@ -9,9 +9,9 @@ export async function registerAlertRoutes(fastify: FastifyInstance) {
       const userId = (request as any).user?.sub;
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
       try {
-        const rows = await withRls(userId, async (conn) => {
+        const rows = await withRls(String(userId), async (conn) => {
           const res = await conn.request().query(
-            `SELECT id, message, raised_at FROM app.Alerts WHERE raised_at > DATEADD(day, -60, SYSUTCDATETIME()) ORDER BY raised_at DESC`
+            `SELECT alert_id, [rule] as message, raised_at FROM app.Alerts WHERE raised_at > DATEADD(day, -60, SYSUTCDATETIME()) ORDER BY raised_at DESC`
           );
           return res.recordset;
         });

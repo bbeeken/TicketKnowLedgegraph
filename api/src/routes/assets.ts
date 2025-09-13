@@ -4,16 +4,19 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { withRls } from '../sql';
 import { cfg } from '../config';
+import * as sql from 'mssql';
 
-function getRequestFromContext(request: FastifyRequest) {
-  const sqlConn = (request as any).sqlConn;
+function getRequestFromContext(request: FastifyRequest): sql.Request | null {
+  const anyReq = request as any;
+  const sqlConn = anyReq?.sqlConn;
   if (sqlConn && typeof sqlConn.request === 'function') return sqlConn.request();
+  if (anyReq && anyReq.sql && typeof anyReq.sql.request === 'function') return anyReq.sql.request();
   return null;
 }
 
 export async function registerAssetRoutes(fastify: FastifyInstance) {
   const uploadDir = cfg.uploadDir || '/data/attachments';
-  try { await fs.promises.mkdir(uploadDir, { recursive: true }); } catch (e) { fastify.log.warn('Could not ensure uploadDir', e); }
+  try { await fs.promises.mkdir(uploadDir, { recursive: true }); } catch (e) { fastify.log.warn({ err: e as any }, 'Could not ensure uploadDir'); }
 
   // Create or update asset
   fastify.post('/assets', { preHandler: [fastify.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {

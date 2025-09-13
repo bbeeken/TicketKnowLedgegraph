@@ -10,9 +10,13 @@ interface Props {
 }
 
 const BlastRadiusChart: FC<Props> = ({ nodeId, type }) => {
+  const assetId = parseInt(nodeId, 10);
+  const blastType = type === 'food-safety' ? 'both' : type as 'network' | 'power';
+  
   const { data, isLoading, error } = useQuery(
     ['blast-radius', nodeId, type],
-    () => getBlastRadius(nodeId, type)
+    () => getBlastRadius(assetId, blastType),
+    { enabled: !isNaN(assetId) }
   );
 
   if (isLoading) return <div>Loading...</div>;
