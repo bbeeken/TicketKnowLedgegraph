@@ -11,8 +11,9 @@ export async function registerVendorRoutes(fastify: FastifyInstance) {
     try {
       const vendors = await withRls(userId, async (conn) => {
         const res = await conn.request().query(`
-          SELECT vendor_id, name, category, created_at, updated_at 
-          FROM kg.Vendor 
+          SELECT vendor_id, name, contact_email, phone as contact_phone, 
+                 '' as category, '' as website, '' as notes 
+          FROM app.Vendors 
           ORDER BY name
         `);
         return res.recordset;
@@ -41,8 +42,9 @@ export async function registerVendorRoutes(fastify: FastifyInstance) {
         const res = await conn.request()
           .input('vendor_id', vendorId)
           .query(`
-            SELECT vendor_id, name, category, created_at, updated_at 
-            FROM kg.Vendor 
+            SELECT vendor_id, name, contact_email, phone as contact_phone, 
+                   '' as category, '' as website, '' as notes 
+            FROM app.Vendors 
             WHERE vendor_id = @vendor_id
           `);
         return res.recordset[0];
@@ -60,16 +62,16 @@ export async function registerVendorRoutes(fastify: FastifyInstance) {
             SELECT 
               a.asset_id, 
               a.site_id,
+              a.zone_id,
               a.type, 
               a.model, 
+              a.vendor,
               a.serial, 
-              a.location,
-              a.purchase_date,
-              a.warranty_until,
+              a.installed_at,
               s.name as site_name
             FROM app.Assets a
             LEFT JOIN app.Sites s ON a.site_id = s.site_id
-            WHERE a.vendor_id = @vendor_id
+            WHERE a.vendor = (SELECT name FROM kg.Vendor WHERE vendor_id = @vendor_id)
             ORDER BY a.asset_id
           `);
         return res.recordset;
@@ -107,16 +109,13 @@ export async function registerVendorRoutes(fastify: FastifyInstance) {
               a.zone_id,
               a.type, 
               a.model, 
+              a.vendor,
               a.serial, 
-              a.location,
-              a.purchase_date,
-              a.warranty_until,
-              a.created_at,
-              a.updated_at,
+              a.installed_at,
               s.name as site_name
             FROM app.Assets a
             LEFT JOIN app.Sites s ON a.site_id = s.site_id
-            WHERE a.vendor_id = @vendor_id
+            WHERE a.vendor = (SELECT name FROM kg.Vendor WHERE vendor_id = @vendor_id)
             ORDER BY s.name, a.type, a.model
           `);
         return res.recordset;

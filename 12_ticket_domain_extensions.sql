@@ -17,14 +17,14 @@ CREATE TABLE app.Statuses (
 GO
 
 -- Seed common statuses if not present
-IF NOT EXISTS (SELECT 1 FROM app.Statuses WHERE code = 'Open')
-    INSERT INTO app.Statuses (code, display_name, is_closed) VALUES ('Open','Open',0);
-IF NOT EXISTS (SELECT 1 FROM app.Statuses WHERE code = 'InProgress')
-    INSERT INTO app.Statuses (code, display_name, is_closed) VALUES ('InProgress','In Progress',0);
-IF NOT EXISTS (SELECT 1 FROM app.Statuses WHERE code = 'Resolved')
-    INSERT INTO app.Statuses (code, display_name, is_closed) VALUES ('Resolved','Resolved',1);
-IF NOT EXISTS (SELECT 1 FROM app.Statuses WHERE code = 'Closed')
-    INSERT INTO app.Statuses (code, display_name, is_closed) VALUES ('Closed','Closed',1);
+IF NOT EXISTS (SELECT 1 FROM app.Statuses WHERE status = 'Open')
+    INSERT INTO app.Statuses (status, sort_order) VALUES ('Open',1);
+IF NOT EXISTS (SELECT 1 FROM app.Statuses WHERE status = 'In Progress')
+    INSERT INTO app.Statuses (status, sort_order) VALUES ('In Progress',2);
+IF NOT EXISTS (SELECT 1 FROM app.Statuses WHERE status = 'Resolved')
+    INSERT INTO app.Statuses (status, sort_order) VALUES ('Resolved',4);
+IF NOT EXISTS (SELECT 1 FROM app.Statuses WHERE status = 'Closed')
+    INSERT INTO app.Statuses (status, sort_order) VALUES ('Closed',5);
 GO
 
 -- Site directory (slim canonical directory for site info)

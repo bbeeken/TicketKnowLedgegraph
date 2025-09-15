@@ -5,6 +5,11 @@
 USE OpsGraph;
 GO
 
+-- Ensure required SET options for filtered indexes and objects
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+
 -- Drop and recreate TicketWatchers with enhanced structure
 IF EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'app' AND TABLE_NAME = 'TicketWatchers')
 BEGIN
@@ -228,7 +233,7 @@ SELECT
     t.privacy_level,
     t.is_private,
     t.site_id,
-    s.display_name as site_name,
+    s.name as site_name,
     t.created_by,
     cu.name as created_by_name,
     t.assignee_user_id,

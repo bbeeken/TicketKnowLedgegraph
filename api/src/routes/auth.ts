@@ -38,7 +38,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       }
 
       // Get user roles
-      const rolesRes = await pool.request().input('userId', row.user_id).query('SELECT role FROM app.UserRoles WHERE user_id = @userId');
+      const rolesRes = await pool.request().input('userId', row.user_id).query('SELECT r.name as role FROM app.UserRoles ur JOIN app.Roles r ON ur.role_id = r.role_id WHERE ur.user_id = @userId');
       const roles = rolesRes.recordset.map((r: any) => r.role);
       const primaryRole = roles.includes('admin') ? 'admin' : roles.includes('manager') ? 'manager' : roles.includes('technician') ? 'technician' : 'viewer';
 
@@ -106,7 +106,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       if (!row) return reply.code(401).send({ error: 'User not found' });
 
       // Get roles
-      const rolesRes = await pool.request().input('userId', row.user_id).query('SELECT role FROM app.UserRoles WHERE user_id = @userId');
+      const rolesRes = await pool.request().input('userId', row.user_id).query('SELECT r.name as role FROM app.UserRoles ur JOIN app.Roles r ON ur.role_id = r.role_id WHERE ur.user_id = @userId');
       const roles = rolesRes.recordset.map((r: any) => r.role);
       const primaryRole = roles.includes('admin') ? 'admin' : roles.includes('manager') ? 'manager' : roles.includes('technician') ? 'technician' : 'viewer';
 
@@ -312,7 +312,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       if (!ok) return reply.code(401).send({ error: 'invalid credentials' });
 
       // fetch roles
-      const rolesRes = await pool.request().input('userId', row.user_id).query('SELECT role FROM app.UserRoles WHERE user_id = @userId');
+      const rolesRes = await pool.request().input('userId', row.user_id).query('SELECT r.name as role FROM app.UserRoles ur JOIN app.Roles r ON ur.role_id = r.role_id WHERE ur.user_id = @userId');
       const roles = rolesRes.recordset.map((r: any) => r.role);
 
       const accessToken = await reply.jwtSign({ sub: String(row.user_id), name: row.name, email: row.email, roles }, { expiresIn: '15m' });
@@ -340,7 +340,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       const res = await pool.request().input('userId', userId).query('SELECT user_id, name, email FROM app.Users WHERE user_id = @userId');
       const row = res.recordset[0];
       if (!row) return reply.code(401).send({ error: 'invalid token' });
-      const rolesRes = await pool.request().input('userId', userId).query('SELECT role FROM app.UserRoles WHERE user_id = @userId');
+      const rolesRes = await pool.request().input('userId', userId).query('SELECT r.name as role FROM app.UserRoles ur JOIN app.Roles r ON ur.role_id = r.role_id WHERE ur.user_id = @userId');
       const roles = rolesRes.recordset.map((r: any) => r.role);
       const accessToken = await reply.jwtSign({ sub: String(row.user_id), name: row.name, email: row.email, roles }, { expiresIn: '15m' });
       const newRefresh = await reply.jwtSign({ sub: String(row.user_id), type: 'refresh' }, { expiresIn: '7d' });

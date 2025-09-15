@@ -26,6 +26,8 @@ RUN apk update && apk upgrade && apk add --no-cache dumb-init && \
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/.next ./.next
+COPY --from=build /app/pages ./pages
+COPY --from=build /app/src ./src
 # (public directory not present in repo; skip copy)
 EXPOSE 3000
 USER nextjs

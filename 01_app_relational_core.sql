@@ -260,6 +260,7 @@ CREATE TABLE app.Tickets (
     ticket_no AS ('OG-' + RIGHT('0000000' + CAST(ticket_id AS VARCHAR(7)), 7)) PERSISTED UNIQUE,
     external_ref NVARCHAR(60) NULL,
     status NVARCHAR(30) NOT NULL,
+    substatus_code NVARCHAR(60) NULL,
     severity TINYINT NOT NULL,
     category_id INT NULL,
     summary NVARCHAR(240) NOT NULL,

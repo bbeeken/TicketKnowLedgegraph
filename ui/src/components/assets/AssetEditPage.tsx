@@ -42,7 +42,8 @@ import {
   PlusIcon,
 } from '@heroicons/react/24/outline';
 import { useRouter } from 'next/router';
-import { Asset, getAsset, updateAsset, uploadAssetImage, scheduleAssetMaintenance } from '../../lib/api/assets';
+import { Asset, getAsset, updateAsset, uploadAssetImage, scheduleAssetMaintenance, uploadAssetAttachment, getAssetAttachments, downloadAssetAttachment, deleteAssetAttachment, type AssetAttachment } from '../../lib/api/assets';
+import { AttachmentManager } from '../shared/AttachmentManager';
 
 export interface AssetEditPageProps {
   assetId?: number;
@@ -87,6 +88,10 @@ const AssetEditPage: React.FC<AssetEditPageProps> = ({ assetId }) => {
     notes: '',
   });
 
+  // Attachments
+  const [attachments, setAttachments] = useState<AssetAttachment[]>([]);
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false);
+
   const id = assetId || Number(router.query.id);
 
   const loadAsset = useCallback(async () => {
@@ -123,11 +128,34 @@ const AssetEditPage: React.FC<AssetEditPageProps> = ({ assetId }) => {
     }
   }, [id, toast]);
 
+  // Attachment handlers
+  const loadAttachments = useCallback(async () => {
+    if (!id) return;
+    
+    setAttachmentsLoading(true);
+    try {
+      const attachmentData = await getAssetAttachments(id);
+      setAttachments(attachmentData);
+    } catch (error) {
+      console.error('Error loading attachments:', error);
+      toast({
+        title: 'Failed to load attachments',
+        description: 'Could not load asset attachments',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setAttachmentsLoading(false);
+    }
+  }, [id, toast]);
+
   useEffect(() => {
     if (id) {
       loadAsset();
+      loadAttachments();
     }
-  }, [id, loadAsset]);
+  }, [id, loadAsset, loadAttachments]);
 
   const handleSave = async () => {
     try {
@@ -190,6 +218,59 @@ const AssetEditPage: React.FC<AssetEditPageProps> = ({ assetId }) => {
       });
     } finally {
       setUploadingImage(false);
+    }
+  };
+
+  const handleUploadAttachment = async (file: File, kind: string = 'documentation') => {
+    if (!id) return;
+    
+    try {
+      await uploadAssetAttachment(id, file, kind);
+    } catch (error) {
+      console.error('Error uploading attachment:', error);
+      throw error;
+    }
+  };
+
+  const handleDownloadAttachment = async (attachmentId: number, filename: string) => {
+    if (!id) return;
+    
+    try {
+      const response = await downloadAssetAttachment(id, attachmentId);
+      
+      // Handle different response formats
+      let blob: Blob;
+      if (response instanceof Blob) {
+        blob = response;
+      } else if (response.data instanceof Blob) {
+        blob = response.data;
+      } else {
+        // If response is not a blob, try to convert it
+        blob = new Blob([response.data || response]);
+      }
+      
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error('Error downloading attachment:', error);
+      throw error;
+    }
+  };
+
+  const handleDeleteAttachment = async (attachmentId: number) => {
+    if (!id) return;
+    
+    try {
+      await deleteAssetAttachment(id, attachmentId);
+    } catch (error) {
+      console.error('Error deleting attachment:', error);
+      throw error;
     }
   };
 
@@ -484,6 +565,20 @@ const AssetEditPage: React.FC<AssetEditPageProps> = ({ assetId }) => {
           </CardBody>
         </Card>
       </Grid>
+
+      {/* Attachments */}
+      <Box mt={6}>
+        <AttachmentManager
+          attachments={attachments}
+          onUpload={handleUploadAttachment}
+          onDownload={handleDownloadAttachment}
+          onDelete={handleDeleteAttachment}
+          onRefresh={loadAttachments}
+          isLoading={attachmentsLoading}
+          showKindSelector={true}
+          acceptedTypes={['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.gif', '.mp4', '.avi', '.mov', '.txt', '.xls', '.xlsx', '.ppt', '.pptx', '.dwg', '.cad']}
+        />
+      </Box>
 
       {/* Image Upload Modal */}
       <Modal isOpen={isImageModalOpen} onClose={onImageModalClose}>

@@ -7,7 +7,7 @@ import { Toaster } from 'sonner';
 import { theme } from '@/theme';
 import { ClientOnly } from '@/components/ClientOnly';
 import { AuthProvider } from '@/components/auth/AuthProvider';
-import '@/styles/globals.css';
+// Note: Global CSS now imported in root pages/_app.tsx
 
 const queryClient = new QueryClient();
 
@@ -19,13 +19,13 @@ function MyApp({ Component, pageProps }: AppProps) {
         <QueryClientProvider client={queryClient}>
           <ChakraProvider theme={theme}>
             <ClientOnly>
-              <AuthProvider>
+              {/* <AuthProvider> */}
                 <a href="#main-content" className="skip-link">Skip to content</a>
                 <div id="__app-root">
                   <Component {...pageProps} />
                 </div>
                 <Toaster richColors position="top-right" />
-              </AuthProvider>
+              {/* </AuthProvider> */}
             </ClientOnly>
           </ChakraProvider>
         </QueryClientProvider>

@@ -5,12 +5,12 @@ BEGIN
     CREATE DATABASE [OpsGraph]
     ON PRIMARY (
         NAME = N'OpsGraph',
-        FILENAME = N'C:\SQLData\OpsGraph.mdf',
+        FILENAME = N'/var/opt/mssql/data/OpsGraph.mdf',
         SIZE = 32MB, FILEGROWTH = 8MB
     )
     LOG ON (
         NAME = N'OpsGraph_log',
-        FILENAME = N'C:\SQLData\OpsGraph_log.ldf',
+        FILENAME = N'/var/opt/mssql/data/OpsGraph_log.ldf',
         SIZE = 16MB, FILEGROWTH = 8MB
     )
     WITH CATALOG_COLLATION = DATABASE_DEFAULT;

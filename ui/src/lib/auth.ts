@@ -55,6 +55,20 @@ class OpsGraphAuth {
 
   private async initializeSession() {
     try {
+      // Development mode: auto-login with test user if no Azure config
+      const isDevelopmentMode = !MICROSOFT_CONFIG.clientId;
+      
+      if (isDevelopmentMode && typeof window !== 'undefined') {
+        const existingToken = localStorage.getItem('opsgraph_token');
+        if (!existingToken) {
+          // Try to auto-login with admin test user
+          const loginResult = await this.signInWithLocal('admin@example.com', 'Admin123!');
+          if (loginResult.user) {
+            return; // Successfully logged in
+          }
+        }
+      }
+
       // Check for stored session (only on client side)
       if (typeof window !== 'undefined') {
         const token = localStorage.getItem('opsgraph_token');

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { apiFetch, apiFetchResponse } from './client';
+import { AssetSchema } from './assets';
 
 export const ticketSchema = z.object({
   ticket_id: z.number(),
@@ -21,7 +22,7 @@ export const ticketSchema = z.object({
   assignee_user_id: z.number().nullable(),
   assignee_name: z.string().nullable(),
   team_id: z.number().nullable(),
-  created_by: z.number(),
+  created_by: z.number().nullable(),
   created_by_name: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -31,7 +32,18 @@ export const ticketSchema = z.object({
   contact_phone: z.string().nullable(),
   problem_description: z.string().nullable(),
   watcher_count: z.number().nullable(),
-  collaborator_count: z.number().nullable()
+  collaborator_count: z.number().nullable(),
+  // Optional arrays that may be included in detailed responses
+  watchers: z.array(z.object({
+    watcher_id: z.number(),
+    user_id: z.number().nullable(),
+    name: z.string().nullable(),
+    email: z.string().nullable(),
+    watcher_type: z.string(),
+    added_at: z.string(),
+    added_by: z.number().nullable()
+  })).optional(),
+  assets: z.array(AssetSchema).optional()
 });
 
 export type Ticket = z.infer<typeof ticketSchema>;
@@ -114,10 +126,16 @@ export const ticketWatcherSchema = z.object({
   watcher_id: z.number(),
   ticket_id: z.number().optional(),
   user_id: z.number().nullable(),
+  user_name: z.string().optional(),
   name: z.string().nullable(),
   email: z.string().nullable(),
   watcher_type: z.enum(['interested','collaborator','site_contact','assignee_backup']).or(z.string()),
-  added_at: z.string().optional()
+  notification_preferences: z.string().optional(),
+  added_by: z.number().optional(),
+  added_by_name: z.string().optional(),
+  added_at: z.string().optional(),
+  is_active: z.boolean().optional(),
+  last_notified_at: z.string().nullable().optional()
 });
 export type TicketWatcher = z.infer<typeof ticketWatcherSchema>;
 
@@ -265,9 +283,51 @@ export async function removeTicketWatcher(ticketId: number, watcherId: number) {
 }
 
 // Attachments API
+export const attachmentSchema = z.object({
+  attachment_id: z.number(),
+  ticket_id: z.number(),
+  filename: z.string(),
+  original_filename: z.string(),
+  file_size: z.number(),
+  mime_type: z.string(),
+  kind: z.string(),
+  uploaded_by: z.number(),
+  uploaded_by_name: z.string().nullable(),
+  uploaded_at: z.string()
+});
+
+export type TicketAttachment = z.infer<typeof attachmentSchema>;
+
 export async function uploadTicketAttachment(ticketId: number, file: File, kind: string = 'other') {
   const form = new FormData();
   form.append('file', file);
   form.append('kind', kind);
   return apiFetch(`/tickets/${ticketId}/attachments`, { method: 'POST', body: form });
+}
+
+export async function getTicketAttachments(ticketId: number) {
+  return apiFetch(`/tickets/${ticketId}/attachments`, { method: 'GET' })
+    .then(data => z.array(attachmentSchema).parse(data));
+}
+
+export async function downloadTicketAttachment(ticketId: number, attachmentId: number) {
+  const response = await apiFetchResponse(`/tickets/${ticketId}/attachments/${attachmentId}/download`, { method: 'GET' });
+  return response;
+}
+
+export async function deleteTicketAttachment(ticketId: number, attachmentId: number) {
+  return apiFetch(`/tickets/${ticketId}/attachments/${attachmentId}`, { method: 'DELETE' });
+}
+
+// Asset Linking API
+export async function linkAssetToTicket(ticketId: number, assetId: number) {
+  return apiFetch(`/tickets/${ticketId}/assets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ asset_id: assetId })
+  });
+}
+
+export async function unlinkAssetFromTicket(ticketId: number, assetId: number) {
+  return apiFetch(`/tickets/${ticketId}/assets/${assetId}`, { method: 'DELETE' });
 }

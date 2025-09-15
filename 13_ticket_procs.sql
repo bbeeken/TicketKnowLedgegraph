@@ -38,12 +38,12 @@ BEGIN
       INSERT INTO app.Tickets (
         status, severity, category_id, summary, description,
         site_id, created_by, assignee_user_id, team_id, vendor_id,
-        due_at, sla_plan_id, type_id, created_at, updated_at, substatus_code
+        due_at, sla_plan_id, created_at, updated_at, substatus_code
       )
       VALUES (
         @status, ISNULL(@severity,0), @category_id, @summary, @description,
         @site_id, @created_by, @assignee_user_id, @team_id, @vendor_id,
-        @due_at, @sla_plan_id, @type_id, SYSUTCDATETIME(), SYSUTCDATETIME(), @substatus_code
+        @due_at, @sla_plan_id, SYSUTCDATETIME(), SYSUTCDATETIME(), @substatus_code
       );
       SET @ticket_id = SCOPE_IDENTITY();
     END
@@ -69,7 +69,6 @@ BEGIN
             assignee_user_id = @assignee_user_id,
             team_id = @team_id,
             vendor_id = @vendor_id,
-            type_id = @type_id,
             due_at = @due_at,
             sla_plan_id = @sla_plan_id,
             substatus_code = @substatus_code,

@@ -18,6 +18,55 @@ export async function registerAssetRoutes(fastify: FastifyInstance) {
   const uploadDir = cfg.uploadDir || '/data/attachments';
   try { await fs.promises.mkdir(uploadDir, { recursive: true }); } catch (e) { fastify.log.warn({ err: e as any }, 'Could not ensure uploadDir'); }
 
+  // GET /assets - list all assets
+  fastify.get('/assets', { preHandler: [fastify.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const userId = (request as any).user?.sub;
+    if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+    
+    try {
+      const query = request.query as any;
+      const search = query.search ? `%${query.search}%` : null;
+      const site_id = query.site_id ? Number(query.site_id) : null;
+      
+      let sql = `
+        SELECT a.*, v.name AS vendor_name 
+        FROM app.Assets a 
+        LEFT JOIN app.Vendors v ON v.vendor_id = a.vendor_id 
+        WHERE 1=1
+      `;
+      
+      if (search) {
+        sql += ` AND (a.type LIKE @search OR a.model LIKE @search OR a.serial LIKE @search OR v.name LIKE @search)`;
+      }
+      
+      if (site_id) {
+        sql += ` AND a.site_id = @site_id`;
+      }
+      
+      sql += ` ORDER BY a.asset_id DESC`;
+      
+      const localReq = getRequestFromContext(request);
+      let res: any;
+      if (localReq) {
+        if (search) localReq.input('search', search);
+        if (site_id) localReq.input('site_id', site_id);
+        res = await localReq.query(sql);
+      } else {
+        res = await withRls(userId, async (conn) => {
+          const req = conn.request();
+          if (search) req.input('search', search);
+          if (site_id) req.input('site_id', site_id);
+          return req.query(sql);
+        });
+      }
+      
+      return res.recordset;
+    } catch (err) {
+      fastify.log.error({ err }, 'Failed to fetch assets');
+      return reply.code(500).send({ error: 'Failed to fetch assets' });
+    }
+  });
+
   // Create or update asset
   fastify.post('/assets', { preHandler: [fastify.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as any || {};
@@ -171,6 +220,39 @@ export async function registerAssetRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error({ err }, 'Failed to register maintenance');
       return reply.code(500).send({ error: 'Failed to register maintenance' });
+    }
+  });
+
+  // PATCH /assets/:id/status - update asset status
+  fastify.patch('/assets/:id/status', { preHandler: [fastify.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const id = Number((request.params as any).id);
+    const body = request.body as any || {};
+    const userId = Number((request as any).user?.sub);
+    if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+    try {
+      const status = body.status;
+      const notes = body.notes || null;
+      
+      if (!status) {
+        return reply.code(400).send({ error: 'Status is required' });
+      }
+
+      const localReq = getRequestFromContext(request);
+      const run = async (req: any) => {
+        req.input('asset_id', id);
+        req.input('status', status);
+        req.input('notes', notes);
+        req.input('updated_by', userId);
+        const res = await req.execute('app.usp_UpdateAssetStatus');
+        return res.recordset[0];
+      };
+      
+      const result = localReq ? await run(localReq) : await withRls(userId, (c) => run(c.request()));
+      return reply.code(200).send(result);
+    } catch (err) {
+      fastify.log.error({ err }, 'Failed to update asset status');
+      return reply.code(500).send({ error: 'Failed to update asset status' });
     }
   });
 }

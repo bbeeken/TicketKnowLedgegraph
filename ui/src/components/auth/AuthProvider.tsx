@@ -32,8 +32,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     // Initial auth check
     const checkAuth = async () => {
       try {
-  // Wait for client-side auth initialization to complete
-  await opsGraphAuth.waitUntilInitialized();
+        // Wait for client-side auth initialization to complete
+        await opsGraphAuth.waitUntilInitialized();
         const currentUser = await opsGraphAuth.getUser();
         setUser(currentUser);
       } catch (error) {

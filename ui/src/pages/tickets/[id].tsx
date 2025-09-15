@@ -1,5 +1,5 @@
 import { useRouter } from 'next/router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   getTicket,
@@ -12,10 +12,20 @@ import {
   addTicketWatcher,
   removeTicketWatcher,
   uploadTicketAttachment,
+  getTicketAttachments,
+  downloadTicketAttachment,
+  deleteTicketAttachment,
+  linkAssetToTicket,
+  unlinkAssetFromTicket,
   type TicketMetadata,
-  type TicketWatcher
+  type TicketWatcher,
+  type TicketAttachment
 } from '@/lib/api/tickets';
 import { getVendors, upsertVendorServiceRequest, type Vendor } from '@/lib/api/vendors';
+import { getAssets, getAsset, createAsset, updateAsset, updateAssetStatus, type Asset, type CreateAssetPayload } from '@/lib/api/assets';
+import { ContactInfoPopover } from '@/components/shared/ContactInfoPopover';
+import { RichTextEditor } from '@/components/shared/RichTextEditor';
+import { AttachmentManager } from '@/components/shared/AttachmentManager';
 import {
   Box,
   Button,
@@ -38,6 +48,8 @@ import {
   Textarea,
   Icon,
   Input,
+  InputGroup,
+  InputLeftElement,
   NumberInput,
   NumberInputField,
   NumberInputStepper,
@@ -62,6 +74,7 @@ import {
   ModalContent,
   ModalHeader,
   ModalBody,
+  ModalFooter,
   ModalCloseButton,
   Menu,
   MenuButton,
@@ -101,6 +114,7 @@ import {
   UserIcon,
   BuildingOfficeIcon,
   ExclamationTriangleIcon,
+  MagnifyingGlassIcon,
   ChatBubbleLeftRightIcon,
   PaperClipIcon,
   EyeIcon,
@@ -128,6 +142,30 @@ export default function TicketDetailPage() {
   const editorRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
+  // Asset search modal state
+  const [assetSearchOpen, setAssetSearchOpen] = useState(false);
+  const [availableAssets, setAvailableAssets] = useState<any[]>([]);
+  const [selectedAsset, setSelectedAsset] = useState<any>(null);
+  const [assetSearchTerm, setAssetSearchTerm] = useState('');
+  const [assetSearchLoading, setAssetSearchLoading] = useState(false);
+  const [ticketAssets, setTicketAssets] = useState<any[]>([]);
+  const assetSearchInputRef = useRef<HTMLInputElement>(null);
+
+  // Service Request Management state
+  const [serviceRequests, setServiceRequests] = useState<any[]>([]);
+  const [serviceRequestOpen, setServiceRequestOpen] = useState(false);
+
+  // Attachments state
+  const [attachments, setAttachments] = useState<TicketAttachment[]>([]);
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false);
+
+  // Asset status update state
+  const [assetStatusUpdate, setAssetStatusUpdate] = useState({
+    asset_id: undefined as number | undefined,
+    status: 'operational' as string,
+    notes: '' as string
+  });
+
   // Theme colors
   const bgColor = useColorModeValue('gray.50', 'gray.900');
   const cardBg = useColorModeValue('white', 'gray.800');
@@ -139,6 +177,381 @@ export default function TicketDetailPage() {
   const warningColor = useColorModeValue('orange.500', 'orange.300');
   const dangerColor = useColorModeValue('red.500', 'red.300');
 
+  // Contact management colors
+  const assigneeBg = useColorModeValue('purple.50', 'purple.900');
+  const assigneeHover = useColorModeValue('purple.100', 'purple.800');
+  const siteContactBg = useColorModeValue('green.50', 'green.900');
+  const siteContactHover = useColorModeValue('green.100', 'green.800');
+
+  const handleUnlinkAsset = async (assetId: number) => {
+    if (!id) return;
+    
+    try {
+      await unlinkAssetFromTicket(Number(id), assetId);
+      setTicketAssets(prev => prev.filter(asset => asset.asset_id !== assetId));
+      toast({ 
+        status: 'success', 
+        title: 'Asset unlinked successfully',
+        description: `Asset #${assetId} has been removed from this ticket`
+      });
+    } catch (error: any) {
+      toast({ 
+        status: 'error', 
+        title: 'Failed to unlink asset', 
+        description: error.message 
+      });
+    }
+  };
+
+  const handleUpdateAssetStatus = async () => {
+    if (!assetStatusUpdate.asset_id) {
+      toast({ status: 'warning', title: 'Please select an asset to update' });
+      return;
+    }
+
+    try {
+      await updateAssetStatus(assetStatusUpdate.asset_id, assetStatusUpdate.status, assetStatusUpdate.notes);
+      
+      // Update the ticket assets list to reflect the new status
+      setTicketAssets(prev => prev.map(asset => 
+        asset.asset_id === assetStatusUpdate.asset_id 
+          ? { ...asset, status: assetStatusUpdate.status }
+          : asset
+      ));
+      
+      toast({ 
+        status: 'success', 
+        title: 'Asset status updated successfully', 
+        description: `Asset #${assetStatusUpdate.asset_id} status updated to ${assetStatusUpdate.status}` 
+      });
+      
+      // Reset form
+      setAssetStatusUpdate({ 
+        asset_id: undefined, 
+        status: 'operational', 
+        notes: '' 
+      });
+    } catch (error: any) {
+      toast({ status: 'error', title: 'Failed to update asset status', description: error.message });
+    }
+  };
+
+  // Asset search modal functions
+  const loadAvailableAssets = useCallback(async () => {
+    try {
+      setAssetSearchLoading(true);
+      const assets = await getAssets();
+      // Filter out assets that are already linked to this ticket
+      const unlinkedAssets = assets.filter(asset => 
+        !ticketAssets.some(linkedAsset => linkedAsset.asset_id === asset.asset_id)
+      );
+      setAvailableAssets(unlinkedAssets);
+    } catch (error: any) {
+      console.error('Failed to load assets:', error);
+      toast({ 
+        status: 'error', 
+        title: 'Failed to load assets', 
+        description: error.message 
+      });
+    } finally {
+      setAssetSearchLoading(false);
+    }
+  }, [ticketAssets, toast]);
+
+  const handleOpenAssetSearch = () => {
+    setAssetSearchOpen(true);
+    setAssetSearchTerm('');
+    setSelectedAsset(null);
+    loadAvailableAssets();
+  };
+
+  const handleSelectAsset = (asset: any) => {
+    setSelectedAsset(asset);
+  };
+
+  const handleLinkAsset = async () => {
+    if (!selectedAsset || !id) return;
+    
+    try {
+      await linkAssetToTicket(Number(id), selectedAsset.asset_id);
+      
+      // Update ticket assets list
+      setTicketAssets(prev => [...prev, selectedAsset]);
+      
+      // Remove from available assets
+      setAvailableAssets(prev => prev.filter(asset => asset.asset_id !== selectedAsset.asset_id));
+      
+      setAssetSearchOpen(false);
+      setSelectedAsset(null);
+      
+      toast({ 
+        status: 'success', 
+        title: 'Asset linked successfully',
+        description: `Asset #${selectedAsset.asset_id} has been linked to this ticket`
+      });
+    } catch (error: any) {
+      toast({ 
+        status: 'error', 
+        title: 'Failed to link asset', 
+        description: error.message 
+      });
+    }
+  };
+
+  // Helper functions for asset display
+  const getAssetTypeIcon = (type: string) => {
+    switch (type?.toLowerCase()) {
+      case 'fuel': return '⛽';
+      case 'power': return '⚡';
+      case 'network': return '🌐';
+      case 'pos': return '�';
+      case 'hvac': return '🌡️';
+      case 'security': return '🔒';
+      case 'building': return '�';
+      case 'dispenser': return '⛽';
+      default: return '⚙️';
+    }
+  };
+
+  const getAssetStatusColor = (status: string) => {
+    switch (status?.toLowerCase()) {
+      case 'operational': return 'green';
+      case 'warning': return 'yellow';
+      case 'critical': return 'red';
+      case 'maintenance': return 'blue';
+      case 'offline': return 'gray';
+      default: return 'gray';
+    }
+  };
+
+  // Asset documentation and knowledge handlers
+  const handleViewAssetManuals = () => {
+    if (ticketAssets.length > 0) {
+      const assetId = ticketAssets[0].asset_id;
+      window.open(`/assets/manuals?asset=${assetId}`, '_blank');
+    } else {
+      toast({
+        status: 'info',
+        title: 'No assets linked',
+        description: 'Link assets to this ticket to view manuals'
+      });
+    }
+  };
+
+  const handleMaintenanceHistory = () => {
+    if (ticketAssets.length > 0) {
+      const assetId = ticketAssets[0].asset_id;
+      window.open(`/assets/maintenance?asset=${assetId}`, '_blank');
+    } else {
+      toast({
+        status: 'info',
+        title: 'No assets linked',
+        description: 'Link assets to this ticket to view maintenance history'
+      });
+    }
+  };
+
+  const handleKnowledgeBase = () => {
+    const categories = ticket.category_name ? encodeURIComponent(ticket.category_name) : '';
+    const query = encodeURIComponent(ticket.summary || '');
+    window.open(`/knowledge?category=${categories}&q=${query}`, '_blank');
+  };
+
+  const handleAssetAnalytics = () => {
+    const assetIds = ticketAssets.map(a => a.asset_id).join(',');
+    if (assetIds) {
+      window.open(`/analytics/assets?assets=${assetIds}`, '_blank');
+    } else {
+      toast({
+        status: 'info',
+        title: 'No assets linked',
+        description: 'Link assets to this ticket to view analytics'
+      });
+    }
+  };
+
+  const handleAddDocumentation = () => {
+    window.open(`/documentation/new?ticket=${id}`, '_blank');
+  };
+
+  const handleViewAssetDetails = (assetId: number) => {
+    window.open(`/assets/${assetId}`, '_blank');
+  };
+
+  // Attachment handlers
+  const loadAttachments = async () => {
+    if (!id) return;
+    
+    setAttachmentsLoading(true);
+    try {
+      const attachmentData = await getTicketAttachments(Number(id));
+      setAttachments(attachmentData as TicketAttachment[]);
+    } catch (error) {
+      console.error('Error loading attachments:', error);
+      toast({
+        status: 'error',
+        title: 'Failed to load attachments',
+        description: 'Could not load ticket attachments'
+      });
+      setAttachments([]); // fallback to empty array on error
+    } finally {
+      setAttachmentsLoading(false);
+    }
+  };
+
+  const handleUploadAttachment = async (file: File, kind: string = 'other') => {
+    if (!id) return;
+    
+    try {
+      await uploadTicketAttachment(Number(id), file, kind);
+      toast({ 
+        status: 'success', 
+        title: 'Attachment uploaded successfully',
+        description: `File "${file.name}" has been uploaded`
+      });
+      // Refresh attachments list
+      await loadAttachments();
+    } catch (error) {
+      console.error('Error uploading attachment:', error);
+      toast({
+        status: 'error',
+        title: 'Failed to upload attachment',
+        description: 'Could not upload the file. Please try again.'
+      });
+      throw error;
+    }
+  };
+
+  const handleDownloadAttachment = async (attachmentId: number, filename: string) => {
+    if (!id) return;
+    
+    try {
+      const response = await downloadTicketAttachment(Number(id), attachmentId);
+      
+      // Handle different response formats
+      let blob: Blob;
+      if (response instanceof Blob) {
+        blob = response;
+      } else if (response.data instanceof Blob) {
+        blob = response.data;
+      } else {
+        // If response is not a blob, try to convert it
+        blob = new Blob([response.data || response]);
+      }
+      
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      toast({
+        status: 'success',
+        title: 'Download started',
+        description: `Downloading "${filename}"`
+      });
+    } catch (error) {
+      console.error('Error downloading attachment:', error);
+      toast({
+        status: 'error',
+        title: 'Download failed',
+        description: 'Could not download the file. Please try again.'
+      });
+      throw error;
+    }
+  };
+
+  const handleDeleteAttachment = async (attachmentId: number) => {
+    if (!id) return;
+    
+    try {
+      await deleteTicketAttachment(Number(id), attachmentId);
+    } catch (error) {
+      console.error('Error deleting attachment:', error);
+      throw error;
+    }
+  };
+
+  // Service Request handlers
+  const handleCreateServiceRequest = async () => {
+    if (!id || !vsrForm.vendor_id || !vsrForm.request_type) {
+      toast({
+        status: 'error',
+        title: 'Missing required fields',
+        description: 'Please select a vendor and enter request type'
+      });
+      return;
+    }
+
+    try {
+      const result = await upsertVendorServiceRequest({
+        ticket_id: Number(id),
+        vendor_id: vsrForm.vendor_id,
+        request_type: vsrForm.request_type,
+        status: vsrForm.status,
+        notes: vsrForm.notes
+      });
+
+      // Add to local state
+      const newRequest = {
+        vsr_id: result.vsr_id,
+        ticket_id: Number(id),
+        vendor_id: vsrForm.vendor_id,
+        vendor_name: vendors.find(v => v.vendor_id === vsrForm.vendor_id)?.name || 'Unknown',
+        request_type: vsrForm.request_type,
+        status: vsrForm.status,
+        notes: vsrForm.notes,
+        created_at: new Date().toISOString()
+      };
+
+      setServiceRequests(prev => [...prev, newRequest]);
+      setServiceRequestOpen(false);
+      setVsrForm({ vendor_id: null, request_type: '', status: 'open', notes: '' });
+
+      toast({
+        status: 'success',
+        title: 'Service request created',
+        description: 'Vendor service request has been created successfully'
+      });
+    } catch (error: any) {
+      toast({
+        status: 'error',
+        title: 'Failed to create service request',
+        description: error.message
+      });
+    }
+  };
+
+  const loadVendors = useCallback(async () => {
+    try {
+      const vendorData = await getVendors();
+      setVendors(vendorData);
+    } catch (error) {
+      console.error('Failed to load vendors:', error);
+    }
+  }, []);
+
+  const loadServiceRequests = useCallback(async () => {
+    if (!id) return;
+    try {
+      // Note: Would need an API endpoint to fetch service requests for a ticket
+      // For now, we'll initialize as empty - this would be implemented with a real endpoint
+      setServiceRequests([]);
+    } catch (error) {
+      console.error('Failed to load service requests:', error);
+    }
+  }, [id]);
+
+  const watcherBg = useColorModeValue('gray.50', 'gray.700');
+  const watcherHover = useColorModeValue('gray.100', 'gray.600');
+  
+  // Header colors
+  const headerBg = useColorModeValue('gray.100', 'gray.700');
+  const headerText = useColorModeValue('gray.800', 'gray.100');
+
   const [ticketType, setTicketType] = useState('user_request');
   const [formFields, setFormFields] = useState<any>({});
   const [typeId, setTypeId] = useState<number | undefined>(undefined);
@@ -146,11 +559,27 @@ export default function TicketDetailPage() {
   const [isWatching, setIsWatching] = useState<boolean>(false);
   const [addWatcherOpen, setAddWatcherOpen] = useState<boolean>(false);
   const [newWatcher, setNewWatcher] = useState<{ user_id?: number | null; name?: string; email?: string; watcher_type?: 'interested' | 'collaborator' | 'site_contact' | 'assignee_backup'; }>({ watcher_type: 'interested' });
-  const [siteContactUserId, setSiteContactUserId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [vsrForm, setVsrForm] = useState<{ vendor_id: number | null; request_type: string; status: string; notes: string }>({ vendor_id: null, request_type: '', status: 'open', notes: '' });
   const [quickSaving, setQuickSaving] = useState<Record<string, boolean>>({});
+
+  // Filter assets based on search term
+  const filteredAssets = useMemo(() => {
+    return availableAssets.filter(asset => {
+      if (!assetSearchTerm) return true;
+      
+      const searchLower = assetSearchTerm.toLowerCase();
+      return (
+        asset.asset_id.toString().includes(searchLower) ||
+        asset.type.toLowerCase().includes(searchLower) ||
+        (asset.model && asset.model.toLowerCase().includes(searchLower)) ||
+        (asset.location && asset.location.toLowerCase().includes(searchLower)) ||
+        (asset.serial && asset.serial.toLowerCase().includes(searchLower)) ||
+        (asset.vendor_name && asset.vendor_name.toLowerCase().includes(searchLower))
+      );
+    });
+  }, [availableAssets, assetSearchTerm]);
 
   useEffect(() => {
     if (!id) return;
@@ -165,14 +594,26 @@ export default function TicketDetailPage() {
         setTicket(t);
         setMessages(msgs);
         setMetadata(meta);
+        
+        // Load ticket assets if available
+        if (t.assets) {
+          setTicketAssets(t.assets);
+        }
+        
         // Load watchers list
         try {
           const ws = await getTicketWatchers(Number(id));
           setWatchers(ws);
-          const sc = ws.find(w => w.watcher_type === 'site_contact' && w.user_id);
-          if (sc?.user_id) setSiteContactUserId(sc.user_id);
         } catch (e: any) {
           console.warn('Failed to load watchers:', e?.message || e);
+        }
+
+        // Load attachments
+        try {
+          const attachmentData = await getTicketAttachments(Number(id));
+          setAttachments(attachmentData as TicketAttachment[]);
+        } catch (e: any) {
+          console.warn('Failed to load attachments:', e?.message || e);
         }
         setEditValues({
           summary: t.summary,
@@ -228,7 +669,9 @@ export default function TicketDetailPage() {
         // ignore
       }
     })();
-  }, [id, toast]);
+    // Load service requests for this ticket
+    loadServiceRequests();
+  }, [id, toast, loadServiceRequests]);
 
   // Helper: determine if current user is watching
   useEffect(() => {
@@ -239,6 +682,13 @@ export default function TicketDetailPage() {
       setIsWatching(false);
     }
   }, [watchers, user]);
+
+  // Load assets when modal opens
+  useEffect(() => {
+    if (assetSearchOpen) {
+      loadAvailableAssets();
+    }
+  }, [assetSearchOpen, loadAvailableAssets]);
 
   const postMessage = async () => {
     if (!newMessage.trim()) {
@@ -282,18 +732,6 @@ export default function TicketDetailPage() {
         description: 'Changes have been saved successfully',
         duration: 3000
       });
-      // If site contact was selected, add as watcher with type site_contact
-      if (siteContactUserId) {
-        try {
-          await addTicketWatcher(Number(id), { user_id: siteContactUserId, watcher_type: 'site_contact' });
-          const ws = await getTicketWatchers(Number(id));
-          setWatchers(ws);
-        } catch (e) {
-          console.warn('Failed to add site contact watcher', e);
-        } finally {
-          setSiteContactUserId(null);
-        }
-      }
     } catch (e: any) {
       if (e?.status === 412) {
         // Concurrency conflict
@@ -399,20 +837,75 @@ export default function TicketDetailPage() {
         toast({ status: 'warning', title: 'Provide a user or name+email' });
         return;
       }
+
+      // Enhanced check for duplicate watchers (including more robust validation)
+      const existingWatcher = watchers?.find(w => {
+        // Check by user_id if both have user_id
+        if (newWatcher.user_id && w.user_id === newWatcher.user_id) {
+          return true;
+        }
+        
+        // Check by email (case-insensitive) if both have email
+        if (newWatcher.email && w.email) {
+          return w.email.toLowerCase().trim() === newWatcher.email.toLowerCase().trim();
+        }
+        
+        // Check by name and type if both have names (exact match to avoid false positives)
+        if (newWatcher.name && w.name) {
+          return w.name.toLowerCase().trim() === newWatcher.name.toLowerCase().trim() &&
+                 w.watcher_type === newWatcher.watcher_type;
+        }
+        
+        return false;
+      });
+
+      if (existingWatcher) {
+        toast({ 
+          status: 'warning', 
+          title: 'Contact already exists', 
+          description: `${existingWatcher.user_name || existingWatcher.name || existingWatcher.email} is already watching this ticket as ${existingWatcher.watcher_type}.`
+        });
+        return;
+      }
+
       setSubmitting(true);
+      
+      // Add the watcher
       await addTicketWatcher(Number(id), {
         user_id: newWatcher.user_id ?? null,
         name: newWatcher.name || null,
         email: newWatcher.email || null,
         watcher_type: newWatcher.watcher_type || 'interested'
       });
+      
+      // Refresh watchers list
       const ws = await getTicketWatchers(Number(id));
       setWatchers(ws);
+      
+      // Reset form and close modal
       setAddWatcherOpen(false);
       setNewWatcher({ watcher_type: 'interested' });
-      toast({ status: 'success', title: 'Watcher added' });
+      
+      toast({ status: 'success', title: 'Contact added successfully' });
     } catch (e: any) {
-      toast({ status: 'error', title: 'Failed to add watcher', description: e.message });
+      // Enhanced error handling for specific error types
+      if (e.message.includes('already exists') || e.message.includes('duplicate') || e.response?.status === 409) {
+        toast({ 
+          status: 'warning', 
+          title: 'Contact already exists', 
+          description: 'This contact is already watching this ticket. Try refreshing the page if you don\'t see them listed.'
+        });
+        
+        // Refresh watchers list to ensure UI is up to date
+        try {
+          const ws = await getTicketWatchers(Number(id));
+          setWatchers(ws);
+        } catch (refreshError) {
+          console.error('Failed to refresh watchers:', refreshError);
+        }
+      } else {
+        toast({ status: 'error', title: 'Failed to add contact', description: e.message });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -449,6 +942,13 @@ export default function TicketDetailPage() {
           toast({ status: 'success', title: 'Stopped watching' });
         }
       } else {
+        // Double check that user isn't already watching before adding
+        const existingWatcher = watchers?.find(w => w.user_id === uid && w.is_active);
+        if (existingWatcher) {
+          toast({ status: 'info', title: 'Already watching', description: 'You are already watching this ticket.' });
+          return;
+        }
+        
         await addTicketWatcher(Number(id), { user_id: uid, watcher_type: 'interested' });
         const ws = await getTicketWatchers(Number(id));
         setWatchers(ws);
@@ -504,6 +1004,26 @@ export default function TicketDetailPage() {
       case 4: return 'Critical';
       case 5: return 'Emergency';
       default: return 'Unknown';
+    }
+  };
+
+  const getRoleColor = (role: 'assignee' | 'site_contact' | 'interested' | 'assignee_backup' | string) => {
+    switch (role?.toLowerCase()) {
+      case 'assignee': return 'purple';
+      case 'site_contact': return 'green';
+      case 'assignee_backup': return 'orange';
+      case 'interested': return 'gray';
+      default: return 'gray';
+    }
+  };
+
+  const getRoleLabel = (role: 'assignee' | 'site_contact' | 'interested' | 'assignee_backup' | string) => {
+    switch (role?.toLowerCase()) {
+      case 'assignee': return 'Assignee';
+      case 'site_contact': return 'Site Contact';
+      case 'assignee_backup': return 'Backup Assignee';
+      case 'interested': return 'Interested';
+      default: return role || 'Contact';
     }
   };
 
@@ -999,19 +1519,13 @@ export default function TicketDetailPage() {
                           </Heading>
                           <Card bg="gray.50" borderColor={borderColor}>
                             <CardBody>
-                              {editMode ? (
-                                <Textarea
-                                  value={editValues.description || ''}
-                                  onChange={(e) => setEditValues({...editValues, description: e.target.value})}
-                                  placeholder="Enter description..."
-                                  rows={6}
-                                  bg={cardBg}
-                                />
-                              ) : (
-                                <Text color={textSecondary} whiteSpace="pre-wrap">
-                                  {ticket.description || 'No description provided'}
-                                </Text>
-                              )}
+                              <RichTextEditor
+                                value={editMode ? (editValues.description || '') : (ticket.description || '')}
+                                onChange={(value) => setEditValues({...editValues, description: value})}
+                                readOnly={!editMode}
+                                placeholder="Enter detailed description using Markdown formatting..."
+                                minHeight="250px"
+                              />
                             </CardBody>
                           </Card>
                         </Box>
@@ -1140,88 +1654,6 @@ export default function TicketDetailPage() {
                                   {/* Assigned To moved to sidebar */}
 
                                   {/* Privacy moved to sidebar */}
-
-                                  {/* Site Contact (adds watcher) */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Site Contact</FormLabel>
-                                    {editMode ? (
-                                      <ChakraSelect
-                                        useBasicStyles
-                                        isSearchable
-                                        selectedOptionStyle="check"
-                                        colorScheme="blue"
-                                        value={
-                                          siteContactUserId
-                                            ? metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })).find(o => o.value === siteContactUserId) || null
-                                            : null
-                                        }
-                                        onChange={(opt: any) => setSiteContactUserId(opt ? Number(opt.value) : null)}
-                                        options={metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })) || []}
-                                        placeholder="Select site contact"
-                                        isClearable
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.contact_name || '—'}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Contact Name */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Contact Name</FormLabel>
-                                    {editMode ? (
-                                      <Input
-                                        value={editValues.contact_name || ''}
-                                        onChange={(e) => setEditValues({ ...editValues, contact_name: e.target.value })}
-                                        placeholder="Primary contact name"
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.contact_name || '—'}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Contact Email */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Contact Email</FormLabel>
-                                    {editMode ? (
-                                      <Input
-                                        type="email"
-                                        value={editValues.contact_email || ''}
-                                        onChange={(e) => setEditValues({ ...editValues, contact_email: e.target.value })}
-                                        placeholder="name@example.com"
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.contact_email || '—'}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Contact Phone */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Contact Phone</FormLabel>
-                                    {editMode ? (
-                                      <Input
-                                        value={editValues.contact_phone || ''}
-                                        onChange={(e) => setEditValues({ ...editValues, contact_phone: e.target.value })}
-                                        placeholder="(555) 555-5555"
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary}>{ticket.contact_phone || '—'}</Text>
-                                    )}
-                                  </FormControl>
-
-                                  {/* Problem Description */}
-                                  <FormControl>
-                                    <FormLabel color={textSecondary}>Problem Description</FormLabel>
-                                    {editMode ? (
-                                      <Textarea
-                                        value={editValues.problem_description || ''}
-                                        onChange={(e) => setEditValues({ ...editValues, problem_description: e.target.value })}
-                                        placeholder="More detailed problem context"
-                                        rows={4}
-                                      />
-                                    ) : (
-                                      <Text color={textSecondary} whiteSpace="pre-wrap">{ticket.problem_description || '—'}</Text>
-                                    )}
-                                  </FormControl>
                                 </SimpleGrid>
                               </VStack>
                             </CardBody>
@@ -1372,6 +1804,276 @@ export default function TicketDetailPage() {
                   </TabPanels>
                 </Tabs>
               </Card>
+
+              {/* Asset Management */}
+              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
+                <CardHeader bg={headerBg} borderTopRadius="md">
+                  <Flex justify="space-between" align="center">
+                    <Heading size="sm" color={headerText}>Asset Management</Heading>
+                    <Button 
+                      size="xs" 
+                      variant="outline" 
+                      colorScheme="blue" 
+                      onClick={() => {
+                        setAssetSearchTerm('');
+                        setSelectedAsset(null);
+                        setAssetSearchOpen(true);
+                      }}
+                    >
+                      Link Asset
+                    </Button>
+                  </Flex>
+                </CardHeader>
+                <CardBody>
+                  <VStack spacing={4} align="stretch">
+                    {/* Linked Assets */}
+                    <Box>
+                      <Text fontSize="md" fontWeight="bold" color={textPrimary} mb={3}>
+                        Linked Assets {ticketAssets.length > 0 && `(${ticketAssets.length})`}
+                      </Text>
+                      {ticketAssets.length > 0 ? (
+                        <VStack spacing={3} align="stretch">
+                          {ticketAssets.map((asset) => (
+                            <Card key={asset.asset_id} bg={watcherBg} borderRadius="md" p={3} variant="outline">
+                              <HStack justify="space-between" align="start">
+                                <HStack spacing={3} flex={1}>
+                                  <Text fontSize="2xl">{getAssetTypeIcon(asset.type)}</Text>
+                                  <Box flex={1}>
+                                    <HStack align="center" spacing={2} mb={1}>
+                                      <Text fontSize="md" fontWeight="semibold" color={textPrimary}>
+                                        Asset #{asset.asset_id}
+                                      </Text>
+                                      <Badge colorScheme={getAssetStatusColor(asset.type)} size="sm">
+                                        {asset.type.toUpperCase()}
+                                      </Badge>
+                                    </HStack>
+                                    <Text fontSize="sm" color={textSecondary} mb={1}>
+                                      {asset.model && `Model: ${asset.model} • `}
+                                      {asset.location || 'Location not specified'}
+                                    </Text>
+                                    {asset.vendor_name && (
+                                      <Text fontSize="sm" color={textSecondary}>
+                                        Vendor: {asset.vendor_name}
+                                      </Text>
+                                    )}
+                                  </Box>
+                                </HStack>
+                                <VStack align="end" spacing={2}>
+                                  <Button 
+                                    size="xs" 
+                                    variant="outline" 
+                                    colorScheme="blue"
+                                    onClick={() => handleViewAssetDetails(asset.asset_id)}
+                                  >
+                                    View Details
+                                  </Button>
+                                  <Button 
+                                    size="xs" 
+                                    variant="ghost" 
+                                    colorScheme="red"
+                                    onClick={() => handleUnlinkAsset(asset.asset_id)}
+                                  >
+                                    Unlink
+                                  </Button>
+                                </VStack>
+                              </HStack>
+                            </Card>
+                          ))}
+                        </VStack>
+                      ) : (
+                        <Text color={textPrimary} fontSize="md" fontStyle="italic" textAlign="center" py={4}>
+                          No assets linked. Click &quot;Link Asset&quot; to connect equipment to this ticket.
+                        </Text>
+                      )}
+                    </Box>
+
+                    <Divider />
+
+                    {/* Asset Status Update */}
+                    <Box>
+                      <Text fontSize="md" fontWeight="bold" color={textPrimary} mb={3}>
+                        Asset Status Update
+                      </Text>
+                      <VStack spacing={3} align="stretch">
+                        <FormControl>
+                          <FormLabel color={textSecondary}>Asset</FormLabel>
+                          <Select 
+                            value={assetStatusUpdate.asset_id || ''} 
+                            onChange={(e) => setAssetStatusUpdate({ ...assetStatusUpdate, asset_id: Number(e.target.value) || undefined })}
+                            placeholder="Select an asset to update"
+                          >
+                            {ticketAssets.map(asset => (
+                              <option key={asset.asset_id} value={asset.asset_id}>
+                                Asset #{asset.asset_id} - {asset.model || asset.type}
+                              </option>
+                            ))}
+                          </Select>
+                        </FormControl>
+                        <FormControl>
+                          <FormLabel color={textSecondary}>New Status</FormLabel>
+                          <Select 
+                            value={assetStatusUpdate.status} 
+                            onChange={(e) => setAssetStatusUpdate({ ...assetStatusUpdate, status: e.target.value })}
+                          >
+                            <option value="operational">Operational</option>
+                            <option value="warning">Warning</option>
+                            <option value="critical">Critical</option>
+                            <option value="maintenance">Under Maintenance</option>
+                            <option value="offline">Offline</option>
+                          </Select>
+                        </FormControl>
+                        <FormControl>
+                          <FormLabel color={textSecondary}>Notes</FormLabel>
+                          <Textarea 
+                            rows={3} 
+                            value={assetStatusUpdate.notes} 
+                            onChange={(e) => setAssetStatusUpdate({ ...assetStatusUpdate, notes: e.target.value })} 
+                            placeholder="Describe the status change or any relevant details"
+                          />
+                        </FormControl>
+                        <HStack justify="flex-end">
+                          <Button
+                            size="sm"
+                            colorScheme="green"
+                            isDisabled={!assetStatusUpdate.asset_id}
+                            onClick={handleUpdateAssetStatus}
+                          >
+                            Update Status
+                          </Button>
+                        </HStack>
+                      </VStack>
+                    </Box>
+
+                    <Divider />
+
+                    {/* Knowledge & Documentation */}
+                    <Box>
+                      <Text fontSize="md" fontWeight="bold" color={textPrimary} mb={3}>
+                        Knowledge & Documentation
+                      </Text>
+                      <VStack spacing={3} align="stretch">
+                        <HStack spacing={2}>
+                          <Button 
+                            size="sm" 
+                            variant="outline" 
+                            colorScheme="blue" 
+                            flex={1}
+                            onClick={handleViewAssetManuals}
+                          >
+                            📚 View Asset Manuals
+                          </Button>
+                          <Button 
+                            size="sm" 
+                            variant="outline" 
+                            colorScheme="green" 
+                            flex={1}
+                            onClick={handleMaintenanceHistory}
+                          >
+                            🔧 Maintenance History
+                          </Button>
+                        </HStack>
+                        <HStack spacing={2}>
+                          <Button 
+                            size="sm" 
+                            variant="outline" 
+                            colorScheme="purple" 
+                            flex={1}
+                            onClick={handleKnowledgeBase}
+                          >
+                            📋 Knowledge Base
+                          </Button>
+                          <Button 
+                            size="sm" 
+                            variant="outline" 
+                            colorScheme="orange" 
+                            flex={1}
+                            onClick={handleAssetAnalytics}
+                          >
+                            📊 Asset Analytics
+                          </Button>
+                        </HStack>
+                        <Button 
+                          size="sm" 
+                          variant="outline" 
+                          colorScheme="teal" 
+                          w="full"
+                          onClick={handleAddDocumentation}
+                        >
+                          ➕ Add Documentation
+                        </Button>
+                      </VStack>
+                    </Box>
+
+                    <Divider />
+
+                    {/* Service Request Management */}
+                    <Box>
+                      <Flex justify="space-between" align="center" mb={3}>
+                        <Text fontSize="md" fontWeight="bold" color={textPrimary}>
+                          Service Requests
+                        </Text>
+                        <Button 
+                          size="xs" 
+                          variant="outline" 
+                          colorScheme="blue" 
+                          onClick={() => setServiceRequestOpen(true)}
+                        >
+                          New Request
+                        </Button>
+                      </Flex>
+                      <VStack spacing={3} align="stretch">
+                        {/* Active Service Requests */}
+                        {serviceRequests.length > 0 ? (
+                          serviceRequests.map((request) => (
+                            <Card key={request.vsr_id} bg={watcherBg} borderRadius="md" p={3} variant="outline">
+                              <VStack align="stretch" spacing={2}>
+                                <HStack justify="space-between" align="start">
+                                  <VStack align="start" spacing={1} flex={1}>
+                                    <HStack spacing={2}>
+                                      <Text fontSize="sm" fontWeight="semibold" color={textPrimary}>
+                                        {request.vendor_name}
+                                      </Text>
+                                      <Badge colorScheme={request.status === 'Open' ? 'blue' : request.status === 'In Progress' ? 'orange' : 'green'} size="sm">
+                                        {request.status}
+                                      </Badge>
+                                    </HStack>
+                                    <Text fontSize="sm" color={textSecondary}>
+                                      {request.request_type}
+                                    </Text>
+                                    {request.notes && (
+                                      <Text fontSize="xs" color={textSecondary} mt={1}>
+                                        {request.notes}
+                                      </Text>
+                                    )}
+                                  </VStack>
+                                  <Text fontSize="xs" color={textSecondary}>
+                                    {new Date(request.created_at).toLocaleDateString()}
+                                  </Text>
+                                </HStack>
+                              </VStack>
+                            </Card>
+                          ))
+                        ) : (
+                          <Text color={textSecondary} fontSize="sm" fontStyle="italic" textAlign="center" py={2}>
+                            No service requests. Click &quot;New Request&quot; to create one.
+                          </Text>
+                        )}
+                      </VStack>
+                    </Box>
+                  </VStack>
+                </CardBody>
+              </Card>
+
+              {/* Attachments */}
+              <AttachmentManager
+                attachments={attachments as any}
+                onUpload={handleUploadAttachment}
+                onDownload={handleDownloadAttachment}
+                onDelete={handleDeleteAttachment}
+                onRefresh={loadAttachments}
+                isLoading={attachmentsLoading}
+                showKindSelector={true}
+              />
             </VStack>
 
             {/* Right Column - Sidebar */}
@@ -1390,38 +2092,6 @@ export default function TicketDetailPage() {
                       </StatNumber>
                     </Stat>
 
-                    <Divider />
-                    
-                    <Stat>
-                      <StatLabel color={textSecondary}>Assigned To</StatLabel>
-                      {editMode ? (
-                        <ChakraSelect
-                          useBasicStyles
-                          isSearchable
-                          selectedOptionStyle="check"
-                          colorScheme="blue"
-                          value={
-                            metadata?.users
-                              .map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id }))
-                              .find(o => o.value === (editValues.assignee_user_id ?? ticket.assignee_user_id ?? undefined)) || null
-                          }
-                          onChange={(opt: any) => {
-                            const newVal = opt ? Number(opt.value) : null;
-                            setEditValues({ ...editValues, assignee_user_id: newVal });
-                            quickSaveField('assignee_user_id', newVal);
-                          }}
-                          options={metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })) || []}
-                          placeholder="Select assignee"
-                          isClearable
-                        />
-                      ) : (
-                        <StatNumber fontSize="md" color={textPrimary}>
-                          {ticket.assignee_name || 'Unassigned'}
-                        </StatNumber>
-                      )}
-                      {quickSaving.assignee_user_id && <Text fontSize="xs" color={textSecondary}>Saving…</Text>}
-                    </Stat>
-                    
                     <Divider />
                     
                     <Stat>
@@ -1503,8 +2173,8 @@ export default function TicketDetailPage() {
 
               {/* Quick Actions */}
               <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
-                <CardHeader bg="gray.50" borderTopRadius="md">
-                  <Heading size="sm" color={textPrimary}>Quick Actions</Heading>
+                <CardHeader bg={headerBg} borderTopRadius="md">
+                  <Heading size="sm" color={headerText}>Quick Actions</Heading>
                 </CardHeader>
                 <CardBody>
                   <VStack spacing={3} align="stretch">
@@ -1565,39 +2235,202 @@ export default function TicketDetailPage() {
 
               {/* Watchers */}
               <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
-                <CardHeader bg="gray.50" borderTopRadius="md">
-                  <Heading size="sm" color={textPrimary}>Watchers</Heading>
+                <CardHeader bg={headerBg} borderTopRadius="md">
+                  <Flex justify="space-between" align="center">
+                    <Heading size="sm" color={headerText}>Team & Notifications</Heading>
+                    <Button size="xs" variant="outline" colorScheme="blue" onClick={() => setAddWatcherOpen(true)}>
+                      Add Contact
+                    </Button>
+                  </Flex>
                 </CardHeader>
                 <CardBody>
-                  <VStack spacing={3} align="stretch">
-                    {watchers && watchers.length > 0 ? (
-                      watchers.map((w) => (
-                        <Flex key={w.watcher_id} align="center" justify="space-between" borderWidth="1px" borderColor={borderColor} borderRadius="md" p={2}>
-                          <HStack>
-                            <Avatar size="xs" name={w.name || w.email || 'Watcher'} />
-                            <Box>
-                              <Text fontSize="sm" color={textPrimary}>{w.name || 'External Watcher'}</Text>
-                              <Text fontSize="xs" color={textSecondary}>{w.email || (w.user_id ? `User #${w.user_id}` : '')}</Text>
-                            </Box>
-                            <Badge colorScheme="blue">{w.watcher_type}</Badge>
+                  <VStack spacing={4} align="stretch">
+                    {/* Assignee Section */}
+                    <Box>
+                      <Text fontSize="md" fontWeight="bold" color={textPrimary} mb={3}>
+                        Assignee
+                      </Text>
+                      {ticket.assignee_user_id ? (
+                        <Box borderWidth="2px" borderColor="purple.400" bg={assigneeBg} borderRadius="md" p={3}>
+                          <ContactInfoPopover
+                            contact={{
+                              user_id: ticket.assignee_user_id,
+                              name: ticket.assignee_name || undefined,
+                              email: metadata?.users.find(u => u.user_id === ticket.assignee_user_id)?.email,
+                              role: metadata?.users.find(u => u.user_id === ticket.assignee_user_id)?.role || undefined
+                            }}
+                            title="Assignee"
+                          >
+                            <HStack cursor="pointer" _hover={{ bg: assigneeHover }} borderRadius="md" p={2}>
+                              <Avatar size="sm" name={ticket.assignee_name || 'Assignee'} />
+                              <Box flex={1}>
+                                <Text fontSize="md" color={textPrimary} fontWeight="semibold">
+                                  {ticket.assignee_name || 'Assignee'}
+                                </Text>
+                                <Text fontSize="sm" color={textSecondary} fontWeight="medium">
+                                  {metadata?.users.find(u => u.user_id === ticket.assignee_user_id)?.email || `User #${ticket.assignee_user_id}`}
+                                </Text>
+                              </Box>
+                            </HStack>
+                          </ContactInfoPopover>
+                          <HStack justify="space-between" align="center" mt={2}>
+                            <Badge colorScheme={getRoleColor('assignee')} size="md" variant="solid">{getRoleLabel('assignee')}</Badge>
+                            {editMode && (
+                              <Button 
+                                size="xs" 
+                                variant="ghost" 
+                                colorScheme="red" 
+                                onClick={() => {
+                                  setEditValues({ ...editValues, assignee_user_id: null });
+                                  quickSaveField('assignee_user_id', null);
+                                }}
+                              >
+                                Unassign
+                              </Button>
+                            )}
                           </HStack>
-                          <Button size="xs" variant="ghost" colorScheme="red" onClick={() => handleRemoveWatcher(w.watcher_id)}>Remove</Button>
-                        </Flex>
-                      ))
-                    ) : (
-                      <Text color={textSecondary} fontSize="sm" textAlign="center">No watchers yet</Text>
-                    )}
-                    <Button size="xs" variant="outline" colorScheme="blue" onClick={() => setAddWatcherOpen(true)}>
-                      Add Watcher
-                    </Button>
+                        </Box>
+                      ) : (
+                        <Box borderWidth="1px" borderColor={borderColor} borderRadius="md" p={3} borderStyle="dashed">
+                          {editMode ? (
+                            <ChakraSelect
+                              useBasicStyles
+                              isSearchable
+                              selectedOptionStyle="check"
+                              colorScheme="purple"
+                              value={null}
+                              onChange={(opt: any) => {
+                                const newVal = opt ? Number(opt.value) : null;
+                                setEditValues({ ...editValues, assignee_user_id: newVal });
+                                quickSaveField('assignee_user_id', newVal);
+                              }}
+                              options={metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })) || []}
+                              placeholder="Select assignee"
+                              isClearable
+                            />
+                          ) : (
+                            <Text color={textPrimary} fontSize="md" fontStyle="italic" textAlign="center" py={4}>
+                              No assignee. {editMode ? 'Select someone to assign this ticket.' : 'Click Edit to assign someone.'}
+                            </Text>
+                          )}
+                        </Box>
+                      )}
+                      {quickSaving.assignee_user_id && <Text fontSize="xs" color={textSecondary}>Saving assignee…</Text>}
+                    </Box>
+
+                    <Divider />
+
+                    {/* Site Contacts Section */}
+                    {(() => {
+                      const siteContacts = watchers?.filter(w => w.watcher_type === 'site_contact' && w.is_active) || [];
+                      return (
+                        <Box>
+                          <Text fontSize="md" fontWeight="bold" color={textPrimary} mb={3}>
+                            Site Contacts {siteContacts.length > 0 && `(${siteContacts.length})`}
+                          </Text>
+                          {siteContacts.length > 0 ? (
+                            <VStack spacing={3} align="stretch">
+                              {siteContacts.map((w) => (
+                                <Box key={w.watcher_id} borderWidth="2px" borderColor="green.400" bg={siteContactBg} borderRadius="md" p={3}>
+                                  <ContactInfoPopover
+                                    contact={{
+                                      user_id: w.user_id || undefined,
+                                      name: w.user_name || w.name || undefined,
+                                      email: w.email || undefined,
+                                      watcher_type: w.watcher_type
+                                    }}
+                                    title="Site Contact"
+                                  >
+                                    <HStack cursor="pointer" _hover={{ bg: siteContactHover }} borderRadius="md" p={2}>
+                                      <Avatar size="sm" name={w.user_name || w.name || w.email || 'Site Contact'} />
+                                      <Box flex={1}>
+                                        <Text fontSize="md" color={textPrimary} fontWeight="semibold">
+                                          {w.user_name || w.name || 'External Contact'}
+                                        </Text>
+                                        <Text fontSize="sm" color={textSecondary} fontWeight="medium">
+                                          {w.email || (w.user_id ? `User #${w.user_id}` : '')}
+                                        </Text>
+                                      </Box>
+                                    </HStack>
+                                  </ContactInfoPopover>
+                                  <HStack justify="space-between" align="center" mt={2}>
+                                    <Badge colorScheme={getRoleColor('site_contact')} size="md" variant="solid">{getRoleLabel('site_contact')}</Badge>
+                                    <Button size="xs" variant="ghost" colorScheme="red" onClick={() => handleRemoveWatcher(w.watcher_id)}>
+                                      Remove
+                                    </Button>
+                                  </HStack>
+                                </Box>
+                              ))}
+                            </VStack>
+                          ) : (
+                            <Text color={textPrimary} fontSize="md" fontStyle="italic" textAlign="center" py={4}>
+                              No site contact assigned. Use &quot;Add Watcher&quot; and select &quot;Site Contact&quot; type.
+                            </Text>
+                          )}
+                        </Box>
+                      );
+                    })()}
+
+                    <Divider />
+
+                    {/* Other Watchers Section */}
+                    {(() => {
+                      const otherWatchers = watchers?.filter(w => w.watcher_type !== 'site_contact' && w.is_active) || [];
+                      return (
+                        <Box>
+                          <Text fontSize="md" fontWeight="bold" color={textPrimary} mb={3}>
+                            Other Watchers {otherWatchers.length > 0 && `(${otherWatchers.length})`}
+                          </Text>
+                          {otherWatchers.length > 0 ? (
+                            <VStack spacing={3} align="stretch">
+                              {otherWatchers.map((w) => (
+                                <Box key={w.watcher_id} borderWidth="2px" borderColor={borderColor} bg={watcherBg} borderRadius="md" p={3}>
+                                  <ContactInfoPopover
+                                    contact={{
+                                      user_id: w.user_id || undefined,
+                                      name: w.user_name || w.name || undefined,
+                                      email: w.email || undefined,
+                                      watcher_type: w.watcher_type
+                                    }}
+                                    title={`${w.watcher_type?.charAt(0).toUpperCase()}${w.watcher_type?.slice(1)} Watcher`}
+                                  >
+                                    <HStack cursor="pointer" _hover={{ bg: watcherHover }} borderRadius="md" p={2}>
+                                      <Avatar size="sm" name={w.user_name || w.name || w.email || 'Watcher'} />
+                                      <Box flex={1}>
+                                        <Text fontSize="md" color={textPrimary} fontWeight="semibold">
+                                          {w.user_name || w.name || 'External Watcher'}
+                                        </Text>
+                                        <Text fontSize="sm" color={textSecondary} fontWeight="medium">
+                                          {w.email || (w.user_id ? `User #${w.user_id}` : '')}
+                                        </Text>
+                                      </Box>
+                                    </HStack>
+                                  </ContactInfoPopover>
+                                  <HStack justify="space-between" align="center" mt={2}>
+                                    <Badge colorScheme={getRoleColor(w.watcher_type || 'interested')} size="md" variant="solid">{getRoleLabel(w.watcher_type || 'interested')}</Badge>
+                                    <Button size="xs" variant="ghost" colorScheme="red" onClick={() => handleRemoveWatcher(w.watcher_id)}>
+                                      Remove
+                                    </Button>
+                                  </HStack>
+                                </Box>
+                              ))}
+                            </VStack>
+                          ) : (
+                            <Text color={textPrimary} fontSize="md" fontStyle="italic" textAlign="center" py={4}>
+                              No other watchers yet
+                            </Text>
+                          )}
+                        </Box>
+                      );
+                    })()}
                   </VStack>
                 </CardBody>
               </Card>
 
               {/* Vendor Service Request */}
               <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
-                <CardHeader bg="gray.50" borderTopRadius="md">
-                  <Heading size="sm" color={textPrimary}>Vendor Service Request</Heading>
+                <CardHeader bg={headerBg} borderTopRadius="md">
+                  <Heading size="sm" color={headerText}>Vendor Service Request</Heading>
                 </CardHeader>
                 <CardBody>
                   <VStack spacing={3} align="stretch">
@@ -1677,11 +2510,11 @@ export default function TicketDetailPage() {
               <Modal isOpen={addWatcherOpen} onClose={() => setAddWatcherOpen(false)}>
                 <ModalOverlay />
                 <ModalContent>
-                  <ModalHeader>Add Watcher</ModalHeader>
+                  <ModalHeader>Add Contact</ModalHeader>
                   <ModalCloseButton />
                   <ModalBody pb={6}>
                     <VStack align="stretch" spacing={4}>
-                      <Text fontSize="sm" color={textSecondary}>Select an existing user or enter name and email for an external watcher.</Text>
+                      <Text fontSize="sm" color={textSecondary}>Select an existing user or enter name and email for an external contact.</Text>
                       <FormControl>
                         <FormLabel>User (optional)</FormLabel>
                         <ChakraSelect
@@ -1694,7 +2527,16 @@ export default function TicketDetailPage() {
                               ? metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })).find(o => o.value === newWatcher.user_id) || null
                               : null
                           }
-                          onChange={(opt: any) => setNewWatcher({ ...newWatcher, user_id: opt ? Number(opt.value) : null })}
+                          onChange={(opt: any) => {
+                            const selectedUser = opt ? metadata?.users.find(u => u.user_id === Number(opt.value)) : null;
+                            setNewWatcher({ 
+                              ...newWatcher, 
+                              user_id: opt ? Number(opt.value) : null,
+                              // Clear external fields when user is selected, or populate from user when available
+                              name: selectedUser ? selectedUser.name : (opt ? '' : newWatcher.name),
+                              email: selectedUser ? selectedUser.email : (opt ? '' : newWatcher.email)
+                            });
+                          }}
                           options={metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })) || []}
                           placeholder="Search users..."
                           isClearable
@@ -1709,10 +2551,9 @@ export default function TicketDetailPage() {
                         <Input type="email" value={newWatcher.email || ''} onChange={(e) => setNewWatcher({ ...newWatcher, email: e.target.value })} />
                       </FormControl>
                       <FormControl>
-                        <FormLabel>Watcher Type</FormLabel>
+                        <FormLabel>Contact Type</FormLabel>
                         <Select value={newWatcher.watcher_type} onChange={(e) => setNewWatcher({ ...newWatcher, watcher_type: e.target.value as any })}>
                           <option value="interested">Interested</option>
-                          <option value="collaborator">Collaborator</option>
                           <option value="site_contact">Site Contact</option>
                           <option value="assignee_backup">Assignee Backup</option>
                         </Select>
@@ -1723,6 +2564,194 @@ export default function TicketDetailPage() {
                       </HStack>
                     </VStack>
                   </ModalBody>
+                </ModalContent>
+              </Modal>
+
+              {/* Asset Search Modal */}
+              <Modal isOpen={assetSearchOpen} onClose={() => setAssetSearchOpen(false)} size="xl" initialFocusRef={assetSearchInputRef}>
+                <ModalOverlay />
+                <ModalContent bg={cardBg}>
+                  <ModalHeader color={headerText}>Link Asset to Ticket</ModalHeader>
+                  <ModalCloseButton />
+                  <ModalBody>
+                    <VStack spacing={4} align="stretch">
+                      <Box>
+                        <Text fontSize="sm" color={textSecondary} mb={2}>Search and select an asset to link to this ticket</Text>
+                        <Text fontSize="xs" color="blue.500" mb={1}>Debug: Search term = &quot;{assetSearchTerm}&quot;</Text>
+                        <Input 
+                          ref={assetSearchInputRef}
+                          placeholder="🔍 Search assets by ID, model, location..."
+                          value={assetSearchTerm || ''}
+                          onChange={(e) => {
+                            console.log('Input onChange:', e.target.value);
+                            setAssetSearchTerm(e.target.value);
+                          }}
+                          onFocus={() => console.log('Input focused')}
+                          onKeyDown={(e) => console.log('Key pressed:', e.key)}
+                          autoFocus
+                          bg="white"
+                          borderColor="gray.300"
+                          _focus={{ borderColor: "blue.500", boxShadow: "0 0 0 1px #3182ce" }}
+                        />
+                      </Box>
+
+                      <Box maxH="400px" overflowY="auto">
+                        {assetSearchLoading ? (
+                          <VStack spacing={4} py={8}>
+                            <Spinner size="md" color="blue.500" />
+                            <Text color={textSecondary}>Loading assets...</Text>
+                          </VStack>
+                        ) : (
+                          <VStack spacing={2} align="stretch">
+                            {filteredAssets.length > 0 ? filteredAssets.map((asset) => (
+                            <Card 
+                              key={asset.asset_id} 
+                              variant="outline" 
+                              cursor="pointer" 
+                              _hover={{ bg: watcherBg }}
+                              onClick={() => setSelectedAsset(asset)}
+                              bg={selectedAsset?.asset_id === asset.asset_id ? watcherBg : 'transparent'}
+                              borderColor={selectedAsset?.asset_id === asset.asset_id ? 'blue.200' : borderColor}
+                            >
+                              <CardBody p={3}>
+                                <HStack spacing={3}>
+                                  <Text fontSize="2xl">{getAssetTypeIcon(asset.type)}</Text>
+                                  <Box flex={1}>
+                                    <HStack align="center" spacing={2} mb={1}>
+                                      <Text fontSize="md" fontWeight="semibold" color={textPrimary}>
+                                        Asset #{asset.asset_id}
+                                      </Text>
+                                      <Badge colorScheme={getAssetStatusColor(asset.type)} size="sm">
+                                        {asset.type.toUpperCase()}
+                                      </Badge>
+                                    </HStack>
+                                    <Text fontSize="sm" color={textSecondary}>
+                                      {asset.model && `Model: ${asset.model} • `}
+                                      {asset.location || 'Location not specified'}
+                                    </Text>
+                                  </Box>
+                                </HStack>
+                              </CardBody>
+                            </Card>
+                          )) : (
+                            <Text color={textSecondary} textAlign="center" py={8}>
+                              No assets found. Try adjusting your search terms.
+                            </Text>
+                          )}
+                          </VStack>
+                        )}
+                      </Box>
+                    </VStack>
+                  </ModalBody>
+                  <ModalFooter>
+                    <Button variant="ghost" mr={3} onClick={() => setAssetSearchOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button 
+                      colorScheme="blue" 
+                      isDisabled={!selectedAsset}
+                      onClick={async () => {
+                        if (selectedAsset && id) {
+                          try {
+                            await linkAssetToTicket(Number(id), selectedAsset.asset_id);
+                            setTicketAssets([...ticketAssets, selectedAsset]);
+                            setSelectedAsset(null);
+                            setAssetSearchOpen(false);
+                            toast({ 
+                              status: 'success', 
+                              title: 'Asset linked successfully',
+                              description: `Asset #${selectedAsset.asset_id} has been linked to this ticket`
+                            });
+                          } catch (error: any) {
+                            toast({ 
+                              status: 'error', 
+                              title: 'Failed to link asset', 
+                              description: error.message 
+                            });
+                          }
+                        }
+                      }}
+                    >
+                      Link Asset
+                    </Button>
+                  </ModalFooter>
+                </ModalContent>
+              </Modal>
+
+              {/* Service Request Modal */}
+              <Modal isOpen={serviceRequestOpen} onClose={() => setServiceRequestOpen(false)} size="lg">
+                <ModalOverlay />
+                <ModalContent bg={cardBg}>
+                  <ModalHeader color={headerText}>Create Service Request</ModalHeader>
+                  <ModalCloseButton />
+                  <ModalBody>
+                    <VStack spacing={4} align="stretch">
+                      <FormControl>
+                        <FormLabel color={textSecondary}>Vendor</FormLabel>
+                        <Select 
+                          value={vsrForm.vendor_id || ''} 
+                          onChange={(e) => setVsrForm({ ...vsrForm, vendor_id: Number(e.target.value) || null })}
+                          placeholder="Select a vendor"
+                        >
+                          {vendors.map(vendor => (
+                            <option key={vendor.vendor_id} value={vendor.vendor_id}>
+                              {vendor.name}
+                            </option>
+                          ))}
+                        </Select>
+                      </FormControl>
+                      <FormControl>
+                        <FormLabel color={textSecondary}>Request Type</FormLabel>
+                        <Select 
+                          value={vsrForm.request_type} 
+                          onChange={(e) => setVsrForm({ ...vsrForm, request_type: e.target.value })}
+                          placeholder="Select request type"
+                        >
+                          <option value="warranty_claim">Warranty Claim</option>
+                          <option value="maintenance_request">Maintenance Request</option>
+                          <option value="parts_order">Parts Order</option>
+                          <option value="technical_support">Technical Support</option>
+                          <option value="installation">Installation</option>
+                          <option value="consultation">Consultation</option>
+                          <option value="other">Other</option>
+                        </Select>
+                      </FormControl>
+                      <FormControl>
+                        <FormLabel color={textSecondary}>Status</FormLabel>
+                        <Select 
+                          value={vsrForm.status} 
+                          onChange={(e) => setVsrForm({ ...vsrForm, status: e.target.value })}
+                        >
+                          <option value="Open">Open</option>
+                          <option value="In Progress">In Progress</option>
+                          <option value="Pending">Pending</option>
+                          <option value="Completed">Completed</option>
+                          <option value="Cancelled">Cancelled</option>
+                        </Select>
+                      </FormControl>
+                      <FormControl>
+                        <FormLabel color={textSecondary}>Notes</FormLabel>
+                        <Textarea 
+                          rows={4} 
+                          value={vsrForm.notes} 
+                          onChange={(e) => setVsrForm({ ...vsrForm, notes: e.target.value })} 
+                          placeholder="Describe the service request details, urgency, and any specific requirements..."
+                        />
+                      </FormControl>
+                    </VStack>
+                  </ModalBody>
+                  <ModalFooter>
+                    <Button variant="ghost" mr={3} onClick={() => setServiceRequestOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button 
+                      colorScheme="blue" 
+                      isDisabled={!vsrForm.vendor_id || !vsrForm.request_type}
+                      onClick={handleCreateServiceRequest}
+                    >
+                      Create Request
+                    </Button>
+                  </ModalFooter>
                 </ModalContent>
               </Modal>
             </VStack>
