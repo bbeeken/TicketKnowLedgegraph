@@ -1,4 +1,4 @@
-const { hashPassword } = require('./api/src/auth/argon.js');
+const { hashPassword } = require('./api/dist/auth/argon.js');
 
 async function createTestUser() {
   try {

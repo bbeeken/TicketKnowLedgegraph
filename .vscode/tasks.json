@@ -30,6 +30,33 @@
 				"$eslint-stylish"
 			],
 			"group": "build"
+		},
+		{
+			"label": "Rebuild and restart ui+api with docker compose",
+			"type": "shell",
+			"command": "docker compose down && docker compose build ui api && docker compose up -d ui api",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [
+				"$eslint-stylish"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Rebuild UI container",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"-f",
+				"c:\\repos\\TicketKnowLedgegraph\\docker-compose.yml",
+				"up",
+				"-d",
+				"--build",
+				"ui"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }

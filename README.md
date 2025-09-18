@@ -1,3 +1,104 @@
+## Qdrant Vector Search (Optional)
+
+To enable fast semantic search, you can run Qdrant alongside the API using Docker Compose:
+
+```sh
+# Start Qdrant (optional profile)
+docker compose --profile qdrant up -d qdrant
+```
+
+**Environment variables for API:**
+
+- `QDRANT_URL` (e.g. `http://qdrant:6333` in compose, or `http://localhost:6333` for local dev)
+- `QDRANT_COLLECTION` (default: `opsgraph_snippets`)
+- `QDRANT_API_KEY` (if you set one in the compose env)
+
+**Backfill existing embeddings:**
+
+```sh
+cd api
+npx tsx scripts/qdrant_backfill.ts
+```
+
+The API will use Qdrant for semantic search and chat retrieval when configured. If Qdrant is unavailable, it will fallback to in-app scoring.
+
+**Troubleshooting:**
+- Check `/api/health/ai` for Qdrant status (reachable, collection, points count, degraded flag)
+- If Qdrant is not reachable, ensure the service is running and ports are mapped (6333)
+- If using an API key, set `QDRANT_API_KEY` in both compose and API env
+
+**Compose profile:**
+- The Qdrant service is under the `qdrant` profile. To run with the rest of the stack, add `--profile qdrant` to your compose commands.
+
+## Microsoft SSO Authentication (Optional)
+
+OpsGraph supports Microsoft Azure AD (Entra ID) single sign-on for enterprise authentication.
+
+**Azure App Registration Setup:**
+
+1. Register a new application in Azure Portal → App registrations
+2. Add redirect URI: `http://localhost:3002/auth/callback/microsoft` (dev) or your production callback URL
+3. Enable ID tokens under Authentication → Implicit grant and hybrid flows
+4. Generate a client secret under Certificates & secrets
+5. Note the Application (client) ID and Directory (tenant) ID
+
+**Environment variables for API:**
+
+- `AZURE_CLIENT_ID` - Application (client) ID from Azure app registration
+- `AZURE_CLIENT_SECRET` - Client secret from Azure app registration  
+- `AZURE_TENANT_ID` - Directory (tenant) ID (or 'common' for multi-tenant)
+- `AZURE_REDIRECT_URI` - Callback URL (e.g. `http://localhost:3002/auth/callback/microsoft`)
+
+**Environment variables for UI:**
+
+- `NEXT_PUBLIC_AZURE_CLIENT_ID` - Same as API client ID
+- `NEXT_PUBLIC_AZURE_TENANT_ID` - Same as API tenant ID
+- `NEXT_PUBLIC_AZURE_REDIRECT_URI` - Same as API redirect URI
+
+**How it works:**
+1. UI redirects user to Microsoft login at `/auth/microsoft/callback`
+2. User authenticates with Microsoft and is redirected back with an authorization code
+3. UI calls `/api/auth/microsoft/callback` with the code
+4. API exchanges code for tokens, fetches user profile from Microsoft Graph
+5. API upserts user to local database and issues JWT tokens
+6. UI stores tokens and user is authenticated
+
+**Troubleshooting:**
+- Check `/api/health` and `/api/auth/microsoft/callback` endpoints
+- If SSO returns "Microsoft SSO not configured", verify all Azure environment variables are set
+- If callback fails, ensure redirect URI matches exactly between Azure registration and env vars
+- User permissions are mapped from `app.Users` table and site assignments in `app.UserSiteAccess`
+
+**Local Development:**
+- Microsoft SSO will return "not configured" error if Azure env vars are missing
+- The system gracefully falls back to local authentication when SSO is not configured
+- For testing without Azure setup, use local auth via `/api/auth/local/signin`
+
+## Environment Variables Summary
+
+### Required (Database)
+- `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASS` - SQL Server connection details
+
+### Optional (Microsoft SSO)
+- API: `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`, `AZURE_REDIRECT_URI`
+- UI: `NEXT_PUBLIC_AZURE_CLIENT_ID`, `NEXT_PUBLIC_AZURE_TENANT_ID`, `NEXT_PUBLIC_AZURE_REDIRECT_URI`
+
+### Optional (Qdrant Vector Search)
+- `QDRANT_URL` (e.g. `http://qdrant:6333`)
+- `QDRANT_COLLECTION` (default: `opsgraph_snippets`)
+- `QDRANT_API_KEY` (if authentication enabled)
+
+### Optional (OpenAI Embeddings)
+- `OPENAI_API_KEY` - Required for real embeddings (falls back to mock if absent)
+- `OPENAI_EMBED_MODEL` (default: `text-embedding-3-small`)
+- `OPENAI_BASE_URL` (default: `https://api.openai.com/v1`)
+- `OPENAI_EMBED_ALLOW_FALLBACK` (default: `false`)
+
+### Health Monitoring
+- Use `GET /api/health/ai` to check Qdrant and embedding status
+- Use `GET /health` for basic API health
+- Check Docker container health with `docker compose ps`
+
 # OpsGraph - Enterprise Ticketing & Knowledge Graph
 
 ## 🚀 Quick Start
@@ -100,12 +201,16 @@ Run `.\validate-security.ps1` to check container security settings.
 docker-compose up --build
 ```
 
-API: http://localhost:3000  
-Worker admin: http://localhost:8000/health
+**Service URLs:**
+- API: http://localhost:3001 (Fastify backend)
+- UI: http://localhost:3002 (Next.js frontend)  
+- Worker admin: http://localhost:8000/health
+- Database: localhost:1433 (SQL Server)
+- Qdrant (optional): http://localhost:6333
 
 ## API Docs
 
-- OpenAPI/Swagger: http://localhost:3000/documentation
+- OpenAPI/Swagger: http://localhost:3001/documentation
 
 ## Testing
 
@@ -120,6 +225,96 @@ Worker admin: http://localhost:8000/health
 ## RLS
 
 All API/worker DB access sets `SESSION_CONTEXT('user_id')` per request/loop.
+
+## 🔎 AI / Embeddings Integration
+
+The knowledge ingestion pipeline can generate semantic embeddings for document/image-derived snippets.
+
+Environment variables (API service):
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `OPENAI_API_KEY` | No | (none) | If set, real OpenAI embeddings are used. |
+| `OPENAI_EMBED_MODEL` | No | `text-embedding-3-small` | Embedding model name. Adjust to change vector dimension. |
+| `OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | Override for Azure/OpenAI-compatible gateway. |
+| `OPENAI_EMBED_ALLOW_FALLBACK` | No | `false` | If `true`, deterministic mock used when key missing or API fails. |
+| `EMBED_CACHE_MAX` | No | `500` | Max in-memory cached embeddings (LRU). |
+
+Behavior:
+- If `OPENAI_API_KEY` is absent, a deterministic mock embedding (length 512) is generated so search & tests still function.
+- Real model dimensions (e.g. `text-embedding-3-small` = 1536, `text-embedding-3-large` = 3072) are inferred; fallback assumption is 1536.
+- Embedding generation capped to first ~8000 characters of input to control token usage.
+
+Files:
+- Provider: `api/src/ai/embeddings.ts`
+- Route usage: `api/src/routes/knowledge-ingestion.ts` (`generateEmbedding` helper)
+- Test: `api/test/embeddings.spec.ts`
+
+Next steps (optional):
+- Backfill script for legacy snippets without embeddings.
+- Approximate NN indexing if snippet volume grows (external vector store or custom index).
+- Add rate limiting / caching of frequent identical embedding requests.
+
+### Backfill Script
+
+Run (after setting DB env vars in `.env`):
+```bash
+cd api
+node -r dotenv/config scripts/backfill_embeddings.ts
+```
+
+### AI Health Endpoint
+
+`GET /api/health/ai` returns comprehensive AI and vector search status:
+
+**Response Format:**
+```json
+{
+  "status": "ok",
+  "embedding": {
+    "model": "text-embedding-3-small",
+    "dimension": 1536,
+    "provider": "openai",
+    "fallback_allowed": false,
+    "degraded": false
+  },
+  "qdrant": {
+    "configured": true,
+    "reachable": true,
+    "collection_exists": true,
+    "points_count": 1250,
+    "degraded": false
+  }
+}
+```
+
+**Status Indicators:**
+- `embedding.degraded`: True when using mock embeddings or fallback mode
+- `qdrant.configured`: True when `QDRANT_URL` environment variable is set
+- `qdrant.reachable`: True when Qdrant service responds to health checks
+- `qdrant.collection_exists`: True when the configured collection exists
+- `qdrant.degraded`: True when Qdrant is configured but not fully functional
+
+**Troubleshooting:**
+- If `qdrant.configured` is false, set `QDRANT_URL` environment variable
+- If `qdrant.reachable` is false, check if Qdrant container is running and accessible
+- If `qdrant.collection_exists` is false, run the backfill script to create the collection
+- Use this endpoint to monitor AI subsystem health in production
+
+### Qdrant Collection Setup
+
+If using Qdrant for the first time, run the backfill script to create the collection and index existing data:
+
+```bash
+cd api
+npx tsx scripts/qdrant_backfill.ts
+```
+
+This script will:
+- Create the `opsgraph_snippets` collection (or your configured collection name)
+- Generate embeddings for existing knowledge snippets
+- Index them in Qdrant for semantic search
+
 
 ## Outbox
 

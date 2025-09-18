@@ -1,0 +1,8 @@
+This is a test attachment file for testing the download functionality.
+
+It contains some sample content to verify that attachment uploads and downloads
+are working correctly in the OpsGraph system.
+
+Created: September 15, 2025 (Updated)
+Purpose: Test file for attachment system validation
+Status: Ready for testing with persistent volume mount

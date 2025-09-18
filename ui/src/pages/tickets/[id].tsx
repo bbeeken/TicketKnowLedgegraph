@@ -1,6 +1,8 @@
 import { useRouter } from 'next/router';
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
+import { useTicketWebSocket } from '@/hooks/useTicketWebSocket';
+import { WebSocketStatus } from '@/components/WebSocketStatus';
 import {
   getTicket,
   getTicketMessages,
@@ -142,6 +144,115 @@ export default function TicketDetailPage() {
   const editorRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
+  // WebSocket integration for real-time updates
+  const {
+    isConnected: wsConnected,
+    subscribeToTicket,
+    unsubscribeFromTicket
+  } = useTicketWebSocket({
+    onTicketUpdate: (ticketId, payload) => {
+      if (ticketId === parseInt(id as string)) {
+        console.log('Received ticket update:', payload);
+        toast({
+          title: 'Ticket Updated',
+          description: `Ticket was updated by ${payload.updatedBy === user?.id ? 'you' : 'another user'}`,
+          status: 'info',
+          duration: 3000,
+          isClosable: true,
+        });
+        // Refresh ticket data
+        loadTicket();
+      }
+    },
+    onTicketComment: (ticketId, comment) => {
+      if (ticketId === parseInt(id as string)) {
+        console.log('Received new comment:', comment);
+        toast({
+          title: 'New Comment',
+          description: `${comment.authorId === user?.id ? 'You' : 'Someone'} added a comment`,
+          status: 'info',
+          duration: 3000,
+          isClosable: true,
+        });
+        // Refresh messages
+        loadMessages();
+      }
+    },
+    onTicketStatusChange: (ticketId, statusChange) => {
+      if (ticketId === parseInt(id as string)) {
+        console.log('Received status change:', statusChange);
+        toast({
+          title: 'Status Changed',
+          description: `Ticket status updated`,
+          status: 'info',
+          duration: 3000,
+          isClosable: true,
+        });
+        // Refresh ticket data
+        loadTicket();
+      }
+    },
+    onTicketAssignment: (ticketId, assignment) => {
+      if (ticketId === parseInt(id as string)) {
+        console.log('Received assignment change:', assignment);
+        toast({
+          title: 'Assignment Changed',
+          description: `Ticket assignment updated`,
+          status: 'info',
+          duration: 3000,
+          isClosable: true,
+        });
+        // Refresh ticket data
+        loadTicket();
+      }
+    }
+  });
+
+  // Data loading functions for WebSocket integration
+  const loadTicket = useCallback(async () => {
+    if (!id) return;
+    try {
+      const ticketData = await getTicket(Number(id));
+      setTicket(ticketData);
+      // Update edit values when ticket data changes
+      setEditValues({
+        description: ticketData.description || '',
+        status: ticketData.status || 'open',
+        site_id: ticketData.site_id || '',
+        category_id: ticketData.category_id || '',
+        substatus_code: ticketData.substatus_code || '',
+        problem_description: ticketData.problem_description || '',
+        contact_name: ticketData.contact_name || '',
+        contact_email: ticketData.contact_email || '',
+        contact_phone: ticketData.contact_phone || ''
+      });
+    } catch (error) {
+      console.error('Failed to load ticket:', error);
+    }
+  }, [id]);
+
+  const loadMessages = useCallback(async () => {
+    if (!id) return;
+    try {
+      const messagesData = await getTicketMessages(Number(id));
+      setMessages(messagesData);
+    } catch (error) {
+      console.error('Failed to load messages:', error);
+    }
+  }, [id]);
+
+  // Subscribe to WebSocket updates when ticket ID changes
+  useEffect(() => {
+    if (id && wsConnected) {
+      const ticketId = parseInt(id as string);
+      subscribeToTicket(ticketId);
+      
+      return () => {
+        unsubscribeFromTicket(ticketId);
+      };
+    }
+  }, [id, wsConnected, subscribeToTicket, unsubscribeFromTicket]);
+
   // Asset search modal state
   const [assetSearchOpen, setAssetSearchOpen] = useState(false);
   const [availableAssets, setAvailableAssets] = useState<any[]>([]);
@@ -165,6 +276,8 @@ export default function TicketDetailPage() {
     status: 'operational' as string,
     notes: '' as string
   });
+
+  const [assetNotesMap, setAssetNotesMap] = useState<Record<number, string>>({});
 
   // Theme colors
   const bgColor = useColorModeValue('gray.50', 'gray.900');
@@ -211,6 +324,7 @@ export default function TicketDetailPage() {
 
     try {
       await updateAssetStatus(assetStatusUpdate.asset_id, assetStatusUpdate.status, assetStatusUpdate.notes);
+      setAssetNotesMap(prev => ({ ...prev, [assetStatusUpdate.asset_id!]: assetStatusUpdate.notes }));
       
       // Update the ticket assets list to reflect the new status
       setTicketAssets(prev => prev.map(asset => 
@@ -324,6 +438,14 @@ export default function TicketDetailPage() {
     }
   };
 
+  // Normalize API-provided status (often uppercase) to match select option values
+  const normalizeAssetStatus = (s?: string) => {
+    if (!s) return 'operational';
+    const lower = s.toLowerCase();
+    const allowed = ['operational','warning','critical','maintenance','offline'];
+    return allowed.includes(lower) ? lower : 'operational';
+  };
+
   // Asset documentation and knowledge handlers
   const handleViewAssetManuals = () => {
     if (ticketAssets.length > 0) {
@@ -354,7 +476,8 @@ export default function TicketDetailPage() {
   const handleKnowledgeBase = () => {
     const categories = ticket.category_name ? encodeURIComponent(ticket.category_name) : '';
     const query = encodeURIComponent(ticket.summary || '');
-    window.open(`/knowledge?category=${categories}&q=${query}`, '_blank');
+    const fromUrl = encodeURIComponent(`/tickets/${id}`);
+    router.push(`/knowledge?category=${categories}&q=${query}&from=${fromUrl}`);
   };
 
   const handleAssetAnalytics = () => {
@@ -399,6 +522,14 @@ export default function TicketDetailPage() {
     }
   };
 
+  // Load attachments on mount and when the ticket id changes
+  useEffect(() => {
+    if (id) {
+      loadAttachments();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
   const handleUploadAttachment = async (file: File, kind: string = 'other') => {
     if (!id) return;
     
@@ -411,12 +542,12 @@ export default function TicketDetailPage() {
       });
       // Refresh attachments list
       await loadAttachments();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error uploading attachment:', error);
       toast({
         status: 'error',
         title: 'Failed to upload attachment',
-        description: 'Could not upload the file. Please try again.'
+        description: error?.body?.message || error?.message || 'Could not upload the file. Please try again.'
       });
       throw error;
     }
@@ -453,12 +584,12 @@ export default function TicketDetailPage() {
         title: 'Download started',
         description: `Downloading "${filename}"`
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error downloading attachment:', error);
       toast({
         status: 'error',
         title: 'Download failed',
-        description: 'Could not download the file. Please try again.'
+        description: error?.body?.message || error?.message || 'Could not download the file. Please try again.'
       });
       throw error;
     }
@@ -469,7 +600,7 @@ export default function TicketDetailPage() {
     
     try {
       await deleteTicketAttachment(Number(id), attachmentId);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error deleting attachment:', error);
       throw error;
     }
@@ -495,7 +626,6 @@ export default function TicketDetailPage() {
         notes: vsrForm.notes
       });
 
-      // Add to local state
       const newRequest = {
         vsr_id: result.vsr_id,
         ticket_id: Number(id),
@@ -508,6 +638,8 @@ export default function TicketDetailPage() {
       };
 
       setServiceRequests(prev => [...prev, newRequest]);
+      // persist notes per vendor
+      setVendorNotesMap(prev => ({ ...prev, [vsrForm.vendor_id!]: vsrForm.notes }));
       setServiceRequestOpen(false);
       setVsrForm({ vendor_id: null, request_type: '', status: 'open', notes: '' });
 
@@ -562,6 +694,7 @@ export default function TicketDetailPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [vsrForm, setVsrForm] = useState<{ vendor_id: number | null; request_type: string; status: string; notes: string }>({ vendor_id: null, request_type: '', status: 'open', notes: '' });
+  const [vendorNotesMap, setVendorNotesMap] = useState<Record<number, string>>({});
   const [quickSaving, setQuickSaving] = useState<Record<string, boolean>>({});
 
   // Filter assets based on search term
@@ -1493,6 +1626,10 @@ export default function TicketDetailPage() {
           <Grid templateColumns={{ base: "1fr", lg: "1fr 350px" }} gap={6}>
             {/* Left Column - Main Content */}
             <VStack spacing={6} align="stretch">
+              {/* WebSocket Status */}
+              <Box>
+                <WebSocketStatus variant="detailed" />
+              </Box>
               {/* Tabbed Interface */}
               <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
                 <Tabs index={tabIndex} onChange={setTabIndex} colorScheme="blue">
@@ -1834,7 +1971,22 @@ export default function TicketDetailPage() {
                       {ticketAssets.length > 0 ? (
                         <VStack spacing={3} align="stretch">
                           {ticketAssets.map((asset) => (
-                            <Card key={asset.asset_id} bg={watcherBg} borderRadius="md" p={3} variant="outline">
+                            <Card 
+                              key={asset.asset_id} 
+                              bg={assetStatusUpdate.asset_id === asset.asset_id ? 'blue.50' : watcherBg} 
+                              borderRadius="md" 
+                              p={3} 
+                              variant="outline"
+                              borderColor={assetStatusUpdate.asset_id === asset.asset_id ? 'blue.400' : undefined}
+                              cursor="pointer"
+                              onClick={() => {
+                                setAssetStatusUpdate({
+                                  asset_id: asset.asset_id,
+                                  status: normalizeAssetStatus(asset.status),
+                                  notes: assetNotesMap[asset.asset_id] || ''
+                                });
+                              }}
+                            >
                               <HStack justify="space-between" align="start">
                                 <HStack spacing={3} flex={1}>
                                   <Text fontSize="2xl">{getAssetTypeIcon(asset.type)}</Text>
@@ -1846,6 +1998,11 @@ export default function TicketDetailPage() {
                                       <Badge colorScheme={getAssetStatusColor(asset.type)} size="sm">
                                         {asset.type.toUpperCase()}
                                       </Badge>
+                                      {asset.status && (
+                                        <Badge colorScheme={getAssetStatusColor(asset.status)} size="sm" variant="subtle">
+                                                                                                          {asset.status}
+                                        </Badge>
+                                      )}
                                     </HStack>
                                     <Text fontSize="sm" color={textSecondary} mb={1}>
                                       {asset.model && `Model: ${asset.model} • `}
@@ -1857,21 +2014,22 @@ export default function TicketDetailPage() {
                                       </Text>
                                     )}
                                   </Box>
-                                </HStack>
+                                                               </HStack>
                                 <VStack align="end" spacing={2}>
                                   <Button 
                                     size="xs" 
                                     variant="outline" 
                                     colorScheme="blue"
-                                    onClick={() => handleViewAssetDetails(asset.asset_id)}
+                                    onClick={(e) => { e.stopPropagation(); handleViewAssetDetails(asset.asset_id); }}
                                   >
                                     View Details
                                   </Button>
-                                  <Button 
+                                                                   <Button 
                                     size="xs" 
-                                    variant="ghost" 
+                                                                       variant="ghost" 
+                                    
                                     colorScheme="red"
-                                    onClick={() => handleUnlinkAsset(asset.asset_id)}
+                                    onClick={(e) => { e.stopPropagation(); handleUnlinkAsset(asset.asset_id); }}
                                   >
                                     Unlink
                                   </Button>
@@ -1899,7 +2057,20 @@ export default function TicketDetailPage() {
                           <FormLabel color={textSecondary}>Asset</FormLabel>
                           <Select 
                             value={assetStatusUpdate.asset_id || ''} 
-                            onChange={(e) => setAssetStatusUpdate({ ...assetStatusUpdate, asset_id: Number(e.target.value) || undefined })}
+                            onChange={(e) => {
+                              const newId = Number(e.target.value) || undefined;
+                              if (!newId) {
+                                setAssetStatusUpdate({ ...assetStatusUpdate, asset_id: undefined });
+                                return;
+                              }
+                              const selected = ticketAssets.find(a => a.asset_id === newId);
+                              setAssetStatusUpdate({ 
+                                ...assetStatusUpdate, 
+                                asset_id: newId, 
+                                status: normalizeAssetStatus(selected?.status),
+                                notes: (newId && assetNotesMap[newId]) ? assetNotesMap[newId] : ''
+                              });
+                            }}
                             placeholder="Select an asset to update"
                           >
                             {ticketAssets.map(asset => (
@@ -2023,6 +2194,33 @@ export default function TicketDetailPage() {
                       </Flex>
                       <VStack spacing={3} align="stretch">
                         {/* Active Service Requests */}
+                        {serviceRequests.filter(r => r.status !== 'completed').length > 0 && (
+                          <Box mb={4}>
+                            <Text fontSize="sm" fontWeight="bold" color={textPrimary} mb={2}>Active Service Requests</Text>
+                            <VStack spacing={2} align="stretch">
+                              {serviceRequests.filter(r => r.status !== 'completed').map(r => (
+                                <HStack key={r.vsr_id} spacing={3} p={2} borderWidth="1px" borderColor={borderColor} borderRadius="md" bg={watcherBg} _hover={{ cursor:'pointer', bg: watcherHover }} onClick={() => {
+                                  setVsrForm({ vendor_id: r.vendor_id, request_type: r.request_type, status: r.status, notes: r.notes || '' });
+                                }}>
+                                  <Badge colorScheme={r.status === 'open' ? 'blue' : r.status === 'in_progress' ? 'yellow' : r.status === 'waiting_vendor' ? 'purple' : 'gray'}>{r.status.replace(/_/g,' ')}</Badge>
+                                  <Text fontSize="sm" color={textPrimary} flex={1}>{r.vendor_name}: {r.request_type}</Text>
+                                  <Text fontSize="xs" color={textSecondary}>{relativeTime(r.created_at)}</Text>
+                                  <Select size="xs" width="140px" value={r.status} onChange={(e) => {
+                                    const newStatus = e.target.value;
+                                    setServiceRequests(prev => prev.map(x => x.vsr_id === r.vsr_id ? { ...x, status: newStatus } : x));
+                                    // TODO: call backend upsert for status only when endpoint exists
+                                  }}>
+                                    <option value="open">Open</option>
+                                    <option value="in_progress">In Progress</option>
+                                    <option value="waiting_vendor">Waiting Vendor</option>
+                                    <option value="completed">Completed</option>
+                                  </Select>
+                                </HStack>
+                              ))}
+                            </VStack>
+                          </Box>
+                        )}
+                        {/* Existing Service Requests */}
                         {serviceRequests.length > 0 ? (
                           serviceRequests.map((request) => (
                             <Card key={request.vsr_id} bg={watcherBg} borderRadius="md" p={3} variant="outline">
@@ -2073,6 +2271,7 @@ export default function TicketDetailPage() {
                 onRefresh={loadAttachments}
                 isLoading={attachmentsLoading}
                 showKindSelector={true}
+                ticketId={Number(id)}
               />
             </VStack>
 
@@ -2434,23 +2633,46 @@ export default function TicketDetailPage() {
                 </CardHeader>
                 <CardBody>
                   <VStack spacing={3} align="stretch">
+                    {/* Active Service Requests summary */}
+                    {serviceRequests.filter(r => r.status !== 'completed').length > 0 && (
+                      <Box mb={4}>
+                        <Text fontSize="sm" fontWeight="bold" color={textPrimary} mb={2}>Active Service Requests</Text>
+                        <VStack spacing={2} align="stretch">
+                          {serviceRequests.filter(r => r.status !== 'completed').map(r => (
+                            <HStack key={r.vsr_id} spacing={3} p={2} borderWidth="1px" borderColor={borderColor} borderRadius="md" bg={watcherBg} _hover={{ cursor:'pointer', bg: watcherHover }} onClick={() => {
+                              setVsrForm({ vendor_id: r.vendor_id, request_type: r.request_type, status: r.status, notes: r.notes || '' });
+                            }}>
+                              <Badge colorScheme={r.status === 'open' ? 'blue' : r.status === 'in_progress' ? 'yellow' : r.status === 'waiting_vendor' ? 'purple' : 'gray'}>{r.status.replace(/_/g,' ')}</Badge>
+                              <Text fontSize="sm" color={textPrimary} flex={1}>{r.vendor_name}: {r.request_type}</Text>
+                              <Text fontSize="xs" color={textSecondary}>{relativeTime(r.created_at)}</Text>
+                              <Select size="xs" width="140px" value={r.status} onChange={(e) => {
+                                const newStatus = e.target.value;
+                                setServiceRequests(prev => prev.map(x => x.vsr_id === r.vsr_id ? { ...x, status: newStatus } : x));
+                                // TODO: call backend upsert for status only when endpoint exists
+                              }}>
+                                <option value="open">Open</option>
+                                <option value="in_progress">In Progress</option>
+                                <option value="waiting_vendor">Waiting Vendor</option>
+                                <option value="completed">Completed</option>
+                              </Select>
+                            </HStack>
+                          ))}
+                        </VStack>
+                      </Box>
+                    )}
                     <FormControl>
                       <FormLabel color={textSecondary}>Vendor</FormLabel>
-                      <ChakraSelect
-                        useBasicStyles
-                        isSearchable
-                        selectedOptionStyle="check"
-                        colorScheme="blue"
-                        value={
-                          vsrForm.vendor_id
-                            ? vendors.map(v => ({ label: v.name, value: v.vendor_id })).find(o => o.value === vsrForm.vendor_id) || null
-                            : null
-                        }
-                        onChange={(opt: any) => setVsrForm({ ...vsrForm, vendor_id: opt ? Number(opt.value) : null })}
-                        options={vendors.map(v => ({ label: v.name, value: v.vendor_id }))}
-                        placeholder="Select vendor"
-                        isClearable
-                      />
+                      <Select 
+                        value={vsrForm.vendor_id || ''} 
+                        onChange={(e) => setVsrForm({ ...vsrForm, vendor_id: Number(e.target.value) || null })}
+                        placeholder="Select a vendor"
+                      >
+                        {vendors.map(vendor => (
+                          <option key={vendor.vendor_id} value={vendor.vendor_id}>
+                            {vendor.name}
+                          </option>
+                        ))}
+                      </Select>
                     </FormControl>
                     <FormControl>
                       <FormLabel color={textSecondary}>Request Type</FormLabel>
@@ -2461,13 +2683,19 @@ export default function TicketDetailPage() {
                       <Select value={vsrForm.status} onChange={(e) => setVsrForm({ ...vsrForm, status: e.target.value })}>
                         <option value="open">Open</option>
                         <option value="in_progress">In Progress</option>
-                        <option value="waiting_vendor">Waiting on Vendor</option>
+                        <option value="pending">Pending</option>
                         <option value="completed">Completed</option>
+                        <option value="cancelled">Cancelled</option>
                       </Select>
                     </FormControl>
                     <FormControl>
                       <FormLabel color={textSecondary}>Notes</FormLabel>
-                      <Textarea rows={3} value={vsrForm.notes} onChange={(e) => setVsrForm({ ...vsrForm, notes: e.target.value })} placeholder="Optional notes for the vendor" />
+                      <Textarea 
+                        rows={4} 
+                        value={vsrForm.notes} 
+                        onChange={(e) => setVsrForm({ ...vsrForm, notes: e.target.value })} 
+                        placeholder="Optional notes for the vendor"
+                      />
                     </FormControl>
                     <HStack justify="flex-end">
                       <Button
@@ -2485,6 +2713,7 @@ export default function TicketDetailPage() {
                               status: vsrForm.status,
                               notes: vsrForm.notes || undefined
                             });
+                            setVendorNotesMap(prev => vsrForm.vendor_id ? { ...prev, [vsrForm.vendor_id]: vsrForm.notes } : prev);
                             toast({ status: 'success', title: 'Service request saved' });
                             try {
                               await postTicketMessage(Number(id), { message_type: 'system', content_format: 'text', body: `Vendor service request created for vendor ${vendors.find(v => v.vendor_id === vsrForm.vendor_id)?.name || vsrForm.vendor_id}` });
@@ -2611,7 +2840,7 @@ export default function TicketDetailPage() {
                               _hover={{ bg: watcherBg }}
                               onClick={() => setSelectedAsset(asset)}
                               bg={selectedAsset?.asset_id === asset.asset_id ? watcherBg : 'transparent'}
-                              borderColor={selectedAsset?.asset_id === asset.asset_id ? 'blue.200' : borderColor}
+                              borderColor={selectedAsset?.asset_id === asset.asset_id ? 'blue.400' : borderColor}
                             >
                               <CardBody p={3}>
                                 <HStack spacing={3}>
@@ -2624,6 +2853,11 @@ export default function TicketDetailPage() {
                                       <Badge colorScheme={getAssetStatusColor(asset.type)} size="sm">
                                         {asset.type.toUpperCase()}
                                       </Badge>
+                                      {asset.status && (
+                                        <Badge colorScheme={getAssetStatusColor(asset.status)} size="sm" variant="subtle">
+                                          {asset.status}
+                                        </Badge>
+                                      )}
                                     </HStack>
                                     <Text fontSize="sm" color={textSecondary}>
                                       {asset.model && `Model: ${asset.model} • `}
@@ -2761,3 +2995,37 @@ export default function TicketDetailPage() {
     </AppLayout>
   );
 }
+
+// Helper to normalize status values received from API (which may be uppercase)
+const normalizeAssetStatus = (s?: string) => {
+  if (!s) return 'operational';
+  const lower = s.toLowerCase();
+  const allowed = ['operational','warning','critical','maintenance','offline'];
+  return allowed.includes(lower) ? lower : 'operational';
+};
+
+function relativeTime(dateIso: string) {
+  const d = new Date(dateIso);
+  const diff = Date.now() - d.getTime();
+  const sec = Math.floor(diff/1000);
+  if (sec < 60) return sec + 's ago';
+  const min = Math.floor(sec/60); if (min < 60) return min + 'm ago';
+  const hr = Math.floor(min/60); if (hr < 24) return hr + 'h ago';
+  const day = Math.floor(hr/24); return day + 'd ago';
+}
+
+// Persistence for vendor notes map
+useEffect(() => {
+  if (id) {
+    try {
+      const stored = localStorage.getItem(`ticket_${id}_vendorNotes`);
+      if (stored) setVendorNotesMap(JSON.parse(stored));
+    } catch {}
+  }
+}, [id]);
+
+useEffect(() => {
+  if (id) {
+    try { localStorage.setItem(`ticket_${id}_vendorNotes`, JSON.stringify(vendorNotesMap)); } catch {}
+  }
+}, [id, vendorNotesMap]);

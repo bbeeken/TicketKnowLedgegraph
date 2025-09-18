@@ -42,6 +42,9 @@ export const LoginPage: FC<LoginPageProps> = ({ onSuccess }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fpOpen, setFpOpen] = useState(false);
+  const [fpEmail, setFpEmail] = useState('');
+  const [fpSubmitting, setFpSubmitting] = useState(false);
   
   const router = useRouter();
   const cardBg = useColorModeValue('white', 'gray.800');
@@ -99,7 +102,22 @@ export const LoginPage: FC<LoginPageProps> = ({ onSuccess }) => {
     }
   };
 
+  const handleForgotPassword = async () => {
+    setFpSubmitting(true);
+    try {
+      const { error } = await opsGraphAuth.resetPassword(fpEmail || email);
+      if (error) throw error;
+      setFpOpen(false);
+      setError(null);
+    } catch (err: any) {
+      setError(err?.message || 'Password reset failed');
+    } finally {
+      setFpSubmitting(false);
+    }
+  };
+
   return (
+    <>
     <Container maxW="md" centerContent py={20}>
       <Card w="full" bg={cardBg} borderColor={borderColor} borderWidth="1px" shadow="xl">
         <CardHeader textAlign="center" pb={6}>
@@ -115,7 +133,6 @@ export const LoginPage: FC<LoginPageProps> = ({ onSuccess }) => {
             </VStack>
           </VStack>
         </CardHeader>
-
         <CardBody>
           <VStack spacing={6}>
             {/* Login Method Selection */}
@@ -197,10 +214,7 @@ export const LoginPage: FC<LoginPageProps> = ({ onSuccess }) => {
                     <Button
                       variant="link"
                       size="sm"
-                      onClick={() => {
-                        // TODO: Implement forgot password
-                        setError('Password reset not yet implemented');
-                      }}
+                      onClick={() => setFpOpen(true)}
                     >
                       Forgot your password?
                     </Button>
@@ -248,5 +262,31 @@ export const LoginPage: FC<LoginPageProps> = ({ onSuccess }) => {
         </CardBody>
       </Card>
     </Container>
+    {/* Forgot Password Modal */}
+    {fpOpen && (
+      <Box position="fixed" inset={0} bg="blackAlpha.600" display="flex" alignItems="center" justifyContent="center" zIndex={1400}>
+        <Card w="md">
+          <CardHeader>
+            <Heading size="md">Reset your password</Heading>
+          </CardHeader>
+          <CardBody>
+            <VStack spacing={4} align="stretch">
+              <Text fontSize="sm" color="gray.600">
+                Enter your account email and we will send you reset instructions.
+              </Text>
+              <FormControl>
+                <FormLabel>Email</FormLabel>
+                <Input type="email" value={fpEmail || email} onChange={(e) => setFpEmail(e.target.value)} placeholder="you@example.com" />
+              </FormControl>
+              <HStack justify="flex-end">
+                <Button variant="ghost" onClick={() => setFpOpen(false)}>Cancel</Button>
+                <Button colorScheme="brand" onClick={handleForgotPassword} isLoading={fpSubmitting}>Send Reset Link</Button>
+              </HStack>
+            </VStack>
+          </CardBody>
+        </Card>
+      </Box>
+    )}
+    </>
   );
 };

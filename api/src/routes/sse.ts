@@ -18,6 +18,22 @@ export async function registerSseRoutes(fastify: FastifyInstance) {
     });
   });
 
+  // POST webhook endpoint for worker to send outbox events
+  fastify.post('/sse/outbox', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const payload = request.body as any;
+      fastify.log.info({ payload }, 'Received webhook from worker');
+      
+      // Publish the event to all connected SSE clients
+      (fastify as any).publishEvent('outbox', payload);
+      
+      reply.code(200).send({ status: 'published' });
+    } catch (error) {
+      fastify.log.error({ error }, 'Failed to process webhook');
+      reply.code(500).send({ error: 'Failed to process webhook' });
+    }
+  });
+
   // Helper to publish events to connected clients
   fastify.decorate('publishEvent', (event: string, data: any) => {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;

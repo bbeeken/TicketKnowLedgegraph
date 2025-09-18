@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Box,
   Button,
@@ -25,7 +25,17 @@ import {
   AlertDialogContent,
   AlertDialogOverlay,
   useDisclosure,
-  Tooltip
+  Tooltip,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalCloseButton,
+  ModalBody,
+  Select,
+  Image,
+  Center,
+  Spinner
 } from '@chakra-ui/react';
 import {
   PaperClipIcon,
@@ -36,8 +46,10 @@ import {
   DocumentIcon,
   TrashIcon,
   ArrowDownTrayIcon,
-  XMarkIcon
+  XMarkIcon,
+  EyeIcon
 } from '@heroicons/react/24/outline';
+import { apiFetchResponse } from '@/lib/api/client';
 
 export interface Attachment {
   attachment_id: number;
@@ -62,6 +74,7 @@ interface AttachmentManagerProps {
   maxFileSize?: number; // in MB
   acceptedTypes?: string[];
   showKindSelector?: boolean;
+  ticketId?: number; // For preview URLs
 }
 
 export function AttachmentManager({
@@ -74,13 +87,29 @@ export function AttachmentManager({
   uploadProgress = 0,
   maxFileSize = 50,
   acceptedTypes = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.gif', '.mp4', '.avi', '.mov', '.txt', '.xls', '.xlsx', '.ppt', '.pptx'],
-  showKindSelector = true
+  showKindSelector = true,
+  ticketId
 }: AttachmentManagerProps) {
   const [uploading, setUploading] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [selectedKind, setSelectedKind] = useState('documentation');
+  const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewObjectUrlState, setPreviewObjectUrlState] = useState<string | null>(null); // for render
+  const [previewTextContentState, setPreviewTextContentState] = useState<string | null>(null);
+  const previewObjectUrlRef = useRef<string | null>(null);
+  const previewTextContentRef = useRef<string | null>(null);
+  const setPreviewObjectUrl = (val: string | null) => {
+    previewObjectUrlRef.current = val;
+    setPreviewObjectUrlState(val);
+  };
+  const setPreviewTextContent = (val: string | null) => {
+    previewTextContentRef.current = val;
+    setPreviewTextContentState(val);
+  };
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { isOpen, onOpen, onClose } = useDisclosure();
+  const { isOpen: isPreviewOpen, onOpen: onPreviewOpen, onClose: onPreviewClose } = useDisclosure();
   const cancelRef = useRef<HTMLButtonElement>(null);
   const toast = useToast();
 
@@ -165,11 +194,12 @@ export function AttachmentManager({
       }
       // Refresh attachments list
       await onRefresh();
-    } catch (error) {
+    } catch (error: any) {
+      const dup = (error?.status === 409) || (typeof error?.body === 'object' && (error.body?.error?.toString()?.toLowerCase()?.includes('duplicate') || error.body?.message?.toString()?.toLowerCase()?.includes('duplicate')));
       toast({
-        title: 'Upload Failed',
-        description: 'There was an error uploading the file. Please try again.',
-        status: 'error',
+        title: dup ? 'Duplicate file' : 'Upload Failed',
+        description: dup ? 'An attachment with identical content already exists for this ticket.' : 'There was an error uploading the file. Please try again.',
+        status: dup ? 'warning' : 'error',
         duration: 5000,
         isClosable: true,
       });
@@ -231,6 +261,62 @@ export function AttachmentManager({
     onOpen();
   };
 
+  const handlePreview = (attachment: Attachment) => {
+    setPreviewAttachment(attachment);
+    onPreviewOpen();
+  };
+
+  const canPreview = (mimeType: string) => {
+    return mimeType.startsWith('image/') || mimeType === 'application/pdf' || mimeType.startsWith('text/');
+  };
+
+  // Reentrancy guarded preview loader
+  const lastPreviewIdRef = useRef<number | null>(null);
+  const loadingRef = useRef(false);
+
+  // We intentionally do not include previewObjectUrl / previewTextContent in deps to avoid refetch loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!previewAttachment || !ticketId) return;
+      // Avoid refetching same attachment while object URL exists
+  if (lastPreviewIdRef.current === previewAttachment.attachment_id && (previewObjectUrlRef.current || previewTextContentRef.current)) return;
+      if (loadingRef.current) return; // already fetching
+      loadingRef.current = true;
+      lastPreviewIdRef.current = previewAttachment.attachment_id;
+      setPreviewLoading(true);
+      setPreviewTextContent(null);
+      if (previewObjectUrlRef.current) {
+        URL.revokeObjectURL(previewObjectUrlRef.current);
+        setPreviewObjectUrl(null);
+      }
+      try {
+        const { data, response } = await apiFetchResponse<Blob>(`/tickets/${ticketId}/attachments/${previewAttachment.attachment_id}/download`, { method: 'GET' });
+        if (cancelled) return;
+        let blob: Blob = data instanceof Blob ? data : await response.blob();
+        if (previewAttachment.mime_type.startsWith('text/')) {
+          const text = await blob.text();
+          if (!cancelled) setPreviewTextContent(text);
+        } else {
+          const url = URL.createObjectURL(blob);
+          if (!cancelled) setPreviewObjectUrl(url);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          toast({ title: 'Preview failed', description: e?.message || 'Unable to load attachment', status: 'error' });
+        }
+      } finally {
+        if (!cancelled) setPreviewLoading(false);
+        loadingRef.current = false;
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [previewAttachment, ticketId, toast]);
+
   return (
     <Card bg={cardBg} shadow="md" borderColor={borderColor}>
       <CardHeader>
@@ -270,17 +356,18 @@ export function AttachmentManager({
             {showKindSelector && (
               <HStack spacing={2} mb={2}>
                 <Text fontSize="sm" color={textSecondary}>Type:</Text>
-                {attachmentKinds.slice(0, 4).map((kind) => (
-                  <Button
-                    key={kind.value}
-                    size="xs"
-                    variant={selectedKind === kind.value ? "solid" : "outline"}
-                    colorScheme="blue"
-                    onClick={() => setSelectedKind(kind.value)}
-                  >
-                    {kind.label}
-                  </Button>
-                ))}
+                <Select 
+                  value={selectedKind} 
+                  onChange={(e) => setSelectedKind(e.target.value)}
+                  size="sm"
+                  maxW="200px"
+                >
+                  {attachmentKinds.map((kind) => (
+                    <option key={kind.value} value={kind.value}>
+                      {kind.label}
+                    </option>
+                  ))}
+                </Select>
               </HStack>
             )}
 
@@ -303,7 +390,15 @@ export function AttachmentManager({
           ) : attachments.length === 0 ? (
             <Alert status="info">
               <AlertIcon />
-              <Text>No attachments yet. Upload files to get started.</Text>
+              <VStack align="start" spacing={1}>
+                <Text>No attachments yet. Upload files to get started.</Text>
+                <Text fontSize="xs" color={textSecondary}>
+                  Accepted types: {acceptedTypes.join(', ')}
+                </Text>
+                <Text fontSize="xs" color={textSecondary}>
+                  Max size: {maxFileSize} MB per file
+                </Text>
+              </VStack>
             </Alert>
           ) : (
             <VStack spacing={3} align="stretch">
@@ -341,6 +436,17 @@ export function AttachmentManager({
                     </HStack>
                     
                     <HStack spacing={1}>
+                      {canPreview(attachment.mime_type) && (
+                        <Tooltip label="Preview">
+                          <IconButton
+                            size="sm"
+                            variant="ghost"
+                            aria-label="Preview"
+                            icon={<Icon as={EyeIcon} />}
+                            onClick={() => handlePreview(attachment)}
+                          />
+                        </Tooltip>
+                      )}
                       <Tooltip label="Download">
                         <IconButton
                           size="sm"
@@ -396,6 +502,47 @@ export function AttachmentManager({
           </AlertDialogContent>
         </AlertDialogOverlay>
       </AlertDialog>
+
+      {/* Preview Modal */}
+      <Modal isOpen={isPreviewOpen} onClose={onPreviewClose} size="6xl">
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>
+            Preview: {previewAttachment?.original_filename}
+          </ModalHeader>
+          <ModalCloseButton />
+          <ModalBody pb={6}>
+            {previewAttachment && (
+              <Center minH="400px">
+                {previewLoading && (
+                  <VStack>
+                    <Spinner />
+                    <Text fontSize="sm" color="gray.500">Loading preview…</Text>
+                  </VStack>
+                )}
+                {!previewLoading && previewAttachment.mime_type.startsWith('image/') && previewObjectUrlState && (
+                  <Image src={previewObjectUrlState} alt={previewAttachment.original_filename} maxH="70vh" maxW="100%" objectFit="contain" />
+                )}
+                {!previewLoading && previewAttachment.mime_type === 'application/pdf' && previewObjectUrlState && (
+                  <iframe src={previewObjectUrlState} width="100%" height="600px" style={{ border: 'none' }} title={previewAttachment.original_filename} />
+                )}
+                {!previewLoading && previewAttachment.mime_type.startsWith('text/') && (
+                  <Box w="100%" h="400px" overflow="auto" p={4} bg={bgColor} borderRadius="md">
+                    <Text fontFamily="mono" fontSize="sm" whiteSpace="pre-wrap">{previewTextContentState || '(empty file)'}</Text>
+                  </Box>
+                )}
+                {!previewLoading && !previewAttachment.mime_type.startsWith('text/') && !previewAttachment.mime_type.startsWith('image/') && previewAttachment.mime_type !== 'application/pdf' && (
+                  <VStack>
+                    <Icon as={DocumentIcon} boxSize={16} color="gray.400" />
+                    <Text color="gray.500">Preview not available for this file type</Text>
+                    <Button onClick={() => handleDownload(previewAttachment)}>Download to View</Button>
+                  </VStack>
+                )}
+              </Center>
+            )}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
     </Card>
   );
 }

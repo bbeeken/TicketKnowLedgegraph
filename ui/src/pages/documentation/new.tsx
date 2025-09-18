@@ -54,6 +54,7 @@ import {
   VideoCameraIcon,
   DocumentIcon
 } from '@heroicons/react/24/outline';
+import { apiFetch } from '../../lib/api/client';
 
 export default function AddDocumentationPage() {
   const router = useRouter();
@@ -61,6 +62,7 @@ export default function AddDocumentationPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [files, setFiles] = useState<File[]>([]);
+  const [inputMode, setInputMode] = useState<'file' | 'url'>('file'); // Toggle between file upload and URL
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { isOpen, onOpen, onClose } = useDisclosure();
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -74,7 +76,8 @@ export default function AddDocumentationPage() {
     tags: '',
     visibility: 'internal',
     relatedAsset: assetId || '',
-    relatedTicket: ticketId || ''
+    relatedTicket: ticketId || '',
+    url: '' // Add URL field for URL ingestion
   });
 
   const bgColor = useColorModeValue('gray.50', 'gray.900');
@@ -171,7 +174,7 @@ export default function AddDocumentationPage() {
       return;
     }
 
-    if (files.length === 0) {
+    if (inputMode === 'file' && files.length === 0) {
       toast({
         title: 'Files Required',
         description: 'Please select at least one file to upload.',
@@ -182,29 +185,91 @@ export default function AddDocumentationPage() {
       return;
     }
 
+    if (inputMode === 'url' && !formData.url.trim()) {
+      toast({
+        title: 'URL Required',
+        description: 'Please enter a valid URL to ingest.',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    if (inputMode === 'url') {
+      try {
+        new URL(formData.url);
+      } catch {
+        toast({
+          title: 'Invalid URL',
+          description: 'Please enter a valid URL (e.g., https://example.com).',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        });
+        return;
+      }
+    }
+
     setUploading(true);
     setUploadProgress(0);
 
     try {
-      // Simulate upload progress
-      for (let i = 0; i <= 100; i += 10) {
-        setUploadProgress(i);
-        await new Promise(resolve => setTimeout(resolve, 200));
+      if (inputMode === 'url') {
+        // URL ingestion
+        setUploadProgress(25);
+        
+        const urlMetadata = {
+          title: formData.title,
+          description: formData.description,
+          category: formData.category,
+          tags: formData.tags ? formData.tags.split(',').map(t => t.trim()) : [],
+          relatedTo: {
+            type: formData.relatedAsset ? 'asset' : formData.relatedTicket ? 'ticket' : 'site',
+            id: parseInt(String(formData.relatedAsset || formData.relatedTicket || '1')) // Default to site 1 if no relation
+          }
+        };
+
+        setUploadProgress(50);
+        
+        const response = await apiFetch('/knowledge/ingest-url', {
+          method: 'POST',
+          body: JSON.stringify({
+            url: formData.url,
+            metadata: urlMetadata
+          })
+        });
+
+        setUploadProgress(100);
+
+        toast({
+          title: 'URL Ingested Successfully',
+          description: `Web page content from "${formData.url}" has been processed and added to the knowledge base.`,
+          status: 'success',
+          duration: 5000,
+          isClosable: true,
+        });
+        
+      } else {
+        // File upload (placeholder - to be implemented)
+        for (let i = 0; i <= 100; i += 10) {
+          setUploadProgress(i);
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+
+        console.log('File upload not yet implemented:', {
+          formData,
+          files: files.map(f => ({ name: f.name, size: f.size, type: f.type }))
+        });
+
+        toast({
+          title: 'Documentation Added Successfully',
+          description: `${files.length} file(s) uploaded and documentation created.`,
+          status: 'success',
+          duration: 5000,
+          isClosable: true,
+        });
       }
-
-      // Here you would implement the actual upload logic
-      console.log('Uploading documentation:', {
-        formData,
-        files: files.map(f => ({ name: f.name, size: f.size, type: f.type }))
-      });
-
-      toast({
-        title: 'Documentation Added Successfully',
-        description: `${files.length} file(s) uploaded and documentation created.`,
-        status: 'success',
-        duration: 5000,
-        isClosable: true,
-      });
 
       // Reset form
       setFormData({
@@ -215,7 +280,8 @@ export default function AddDocumentationPage() {
         tags: '',
         visibility: 'internal',
         relatedAsset: assetId as string || '',
-        relatedTicket: ticketId as string || ''
+        relatedTicket: ticketId as string || '',
+        url: ''
       });
       setFiles([]);
       setUploadProgress(0);

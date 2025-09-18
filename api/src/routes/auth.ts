@@ -4,6 +4,138 @@ import { hashPassword, verifyPassword } from '../auth/argon';
 import { getPool } from '../sql';
 
 export async function registerAuthRoutes(fastify: FastifyInstance) {
+  // POST /auth/microsoft/callback - Microsoft SSO callback
+  fastify.post('/auth/microsoft/callback', {
+    schema: {
+      description: 'Exchange Microsoft OAuth2 code for JWT, upsert user, and return tokens',
+      body: {
+        type: 'object',
+        required: ['code'],
+        properties: {
+          code: { type: 'string' }
+        }
+      }
+    }
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { code } = (request.body as any) || {};
+    if (!code) return reply.code(400).send({ error: 'Missing code' });
+
+    // Env config
+    const clientId = process.env.AZURE_CLIENT_ID;
+    const clientSecret = process.env.AZURE_CLIENT_SECRET;
+    const tenantId = process.env.AZURE_TENANT_ID;
+    const redirectUri = process.env.AZURE_REDIRECT_URI;
+    if (!clientId || !clientSecret || !tenantId || !redirectUri) {
+      return reply.code(500).send({ error: 'Microsoft SSO not configured' });
+    }
+
+    // Exchange code for tokens
+    let tokenRes, tokenJson;
+    try {
+      tokenRes = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          code,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+          scope: 'openid profile email offline_access User.Read'
+        })
+      });
+      tokenJson = await tokenRes.json();
+      if (!tokenRes.ok) throw new Error(tokenJson.error_description || 'Token exchange failed');
+    } catch (e: any) {
+      return reply.code(401).send({ error: 'Token exchange failed', detail: e?.message || e });
+    }
+    const accessToken = tokenJson.access_token;
+    if (!accessToken) return reply.code(401).send({ error: 'No access token from Microsoft' });
+
+    // Fetch user info from Graph
+    let msUser;
+    try {
+      const graphRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      msUser = await graphRes.json();
+      if (!graphRes.ok) throw new Error(msUser.error?.message || 'Failed to fetch user info');
+    } catch (e: any) {
+      return reply.code(401).send({ error: 'Failed to fetch user info', detail: e?.message || e });
+    }
+
+    // Upsert user in DB (by email)
+    const pool = await getPool();
+    let userRow;
+    try {
+      // Try to find user by email
+      const res = await pool.request().input('email', msUser.mail || msUser.userPrincipalName).query('SELECT user_id, name, email, is_admin, created_at FROM app.Users WHERE email = @email');
+      if (res.recordset.length > 0) {
+        userRow = res.recordset[0];
+      } else {
+        // Create user if not found
+        const createRes = await pool.request()
+          .input('name', msUser.displayName || msUser.givenName || msUser.surname || msUser.mail)
+          .input('email', msUser.mail || msUser.userPrincipalName)
+          .query(`INSERT INTO app.Users (name, email, is_active, created_at) OUTPUT INSERTED.user_id, INSERTED.name, INSERTED.email, INSERTED.is_admin, INSERTED.created_at VALUES (@name, @email, 1, SYSUTCDATETIME())`);
+        userRow = createRes.recordset[0];
+      }
+    } catch (e: any) {
+      return reply.code(500).send({ error: 'Failed to upsert user', detail: e?.message || e });
+    }
+
+    // Get user roles
+    let roles: string[] = [];
+    try {
+      const rolesRes = await pool.request().input('userId', userRow.user_id).query('SELECT r.name as role FROM app.UserRoles ur JOIN app.Roles r ON ur.role_id = r.role_id WHERE ur.user_id = @userId');
+      roles = rolesRes.recordset.map((r: any) => r.role);
+    } catch {}
+    const primaryRole = roles.includes('admin') ? 'admin' : roles.includes('manager') ? 'manager' : roles.includes('technician') ? 'technician' : 'viewer';
+
+    // Get site access
+    let siteIds: number[] = [];
+    try {
+      const siteRes = await pool.request().input('userId', userRow.user_id).query('SELECT site_id FROM app.UserSiteAccess WHERE user_id = @userId');
+      siteIds = siteRes.recordset.map((r: any) => r.site_id);
+    } catch {}
+
+    // Build JWT payload
+    const jwtPayload = {
+      sub: String(userRow.user_id),
+      email: userRow.email,
+      name: userRow.name,
+      roles,
+      site_ids: siteIds,
+      is_admin: userRow.is_admin,
+      auth_provider: 'microsoft'
+    };
+    const jwtAccessToken = await reply.jwtSign(jwtPayload, { expiresIn: '15m' });
+    const jwtRefreshToken = await reply.jwtSign({ sub: String(userRow.user_id), type: 'refresh' }, { expiresIn: '7d' });
+
+    // Build user profile
+    const profile = {
+      id: String(userRow.user_id),
+      email: userRow.email,
+      full_name: userRow.name,
+      site_ids: siteIds,
+      team_ids: [],
+      role: primaryRole,
+      auth_provider: 'microsoft' as const,
+      is_admin: userRow.is_admin,
+      created_at: userRow.created_at,
+      updated_at: userRow.created_at
+    };
+
+    const user = {
+      id: String(userRow.user_id),
+      email: userRow.email,
+      profile,
+      access_token: jwtAccessToken
+    };
+
+    return reply.send({ user, access_token: jwtAccessToken, refresh_token: jwtRefreshToken });
+  });
+
   // POST /auth/local/signin - Local account login
   fastify.post('/auth/local/signin', async (request: FastifyRequest, reply: FastifyReply) => {
     const bodySchema = z.object({ email: z.string().email(), password: z.string() });
@@ -32,7 +164,18 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
       const passwordValid = await verifyPassword(row.password, password);
       // TEMPORARY: Also check for plain text password for testing
       if (!passwordValid && row.password === password) {
-        // Allow plain text match for testing
+        // Allow plain text match for testing BUT immediately migrate to Argon2 hash for security
+        try {
+          const newHash = await hashPassword(password);
+          await pool.request()
+            .input('userId', row.user_id)
+            .input('password', newHash)
+            .query('UPDATE app.Users SET password = @password WHERE user_id = @userId');
+          fastify.log.warn({ userId: row.user_id, email: row.email }, 'Migrated plaintext password to Argon2 hash');
+          // Note: continue as authenticated
+        } catch (e) {
+          fastify.log.error({ err: e, userId: row.user_id }, 'Failed to migrate plaintext password');
+        }
       } else if (!passwordValid) {
         return reply.code(401).send({ error: 'Invalid credentials' });
       }
@@ -135,33 +278,6 @@ export async function registerAuthRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error({ err }, 'Token validation failed');
       return reply.code(500).send({ error: 'Validation failed' });
-    }
-  });
-
-  // POST /auth/session-context - Set SQL Server session context for RLS
-  fastify.post('/auth/session-context', { preHandler: [fastify.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = (request as any).user;
-    const bodySchema = z.object({ userId: z.string() });
-    const parsed = bodySchema.safeParse(request.body);
-    
-    if (!parsed.success) return reply.code(400).send({ error: 'invalid payload' });
-    
-    // Verify the userId matches the authenticated user
-    if (parsed.data.userId !== user.sub) {
-      return reply.code(403).send({ error: 'forbidden' });
-    }
-
-    const pool = await getPool();
-    try {
-      // Set RLS context
-      await pool.request()
-        .input('userId', user.sub)
-        .query(`EXEC sys.sp_set_session_context @key=N'user_id', @value=@userId;`);
-      
-      return reply.send({ success: true });
-    } catch (err) {
-      fastify.log.error({ err }, 'Failed to set session context');
-      return reply.code(500).send({ error: 'failed' });
     }
   });
 

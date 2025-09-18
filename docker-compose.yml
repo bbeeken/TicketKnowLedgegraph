@@ -24,14 +24,21 @@ services:
       DB_PASS: "S@fePassw0rd!KG2025"
       DB_CONNECTION_STRING: "mssql://sa:S@fePassw0rd!KG2025@mssql:1433/OpsGraph?encrypt=true&trustServerCertificate=true"
       JWT_SECRET: "this_is_a_very_long_local_dev_secret_please_change"
-      CORS_ORIGINS: "http://localhost:3000,http://localhost:3002,http://ui:3000,http://localhost:19006,exp://127.0.0.1:19000,exp://localhost:19000"
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3002,http://ui:3000,http://localhost:19006,exp://127.0.0.1:19000,exp://localhost:19000"
+      # AI embeddings config: allow deterministic mock fallback when OPENAI_API_KEY is not set
+      OPENAI_EMBED_ALLOW_FALLBACK: "true"
+      # Limit per-IP WebSocket connections to reduce reconnect storms from the UI
+      WS_MAX_CONN_PER_IP: "3"
     ports:
       - "3001:3000"
+    volumes:
+      - api_attachments:/tmp/attachments
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      # Use Node to probe /health to avoid depending on wget/curl in the image
+      test: ["CMD", "node", "-e", "(async()=>{try{const res=await fetch('http://localhost:3000/health');if(!res.ok) process.exit(1);}catch(e){process.exit(1)}})()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
     depends_on:
       mssql:
         condition: service_healthy
@@ -45,7 +52,8 @@ services:
       - mssql
       - api
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # Use Python's standard library to avoid relying on curl in the image
+      test: ["CMD", "python", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').getcode()==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -65,19 +73,38 @@ services:
     build:
       context: ./ui
       args:
-        NEXT_PUBLIC_API_BASE_URL: "http://localhost:3001/api"
+        NEXT_PUBLIC_API_BASE_URL: "http://127.0.0.1:3001/api"
+        INTERNAL_API_BASE_URL: "http://api:3000/api"
     environment:
       # Use the internal docker network URL to reach the API service and include /api prefix
-      NEXT_PUBLIC_API_BASE_URL: "http://localhost:3001/api"
+      NEXT_PUBLIC_API_BASE_URL: "http://127.0.0.1:3001/api"
+      INTERNAL_API_BASE_URL: "http://api:3000/api"
     ports:
       - "3002:3000"
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      # Use Node to probe the Next.js server without requiring wget/curl in the image
+      test: ["CMD", "node", "-e", "(async()=>{try{const r=await fetch('http://localhost:3000');if(!r.ok)process.exit(1);}catch(e){process.exit(1)}})()"]
       interval: 30s
       timeout: 5s
       retries: 3
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+
+  # Qdrant vector DB for semantic search (optional)
+  qdrant:
+    image: qdrant/qdrant:v1.9.1
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__API_KEY: ""
+    profiles: ["qdrant"]
 
 volumes:
   mssql_data:
+  qdrant_data:
+  api_attachments:

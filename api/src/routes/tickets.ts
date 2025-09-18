@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { RequestWithSql, getSqlConnection, SQL_CONN_SYMBOL, RequestSqlConnection } from '../db/sql';
 import { getRequestFromContext } from '../middleware/rls';
 import { withRls } from '../sql';
+import { ticketWsManager } from './ticket-websocket';
 
 // Helper to get SQL connection from request context
 function getConnectionFromContext(request: FastifyRequest): RequestSqlConnection | null {
@@ -635,6 +636,22 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
             
             return Number(params.data.id);
           });
+          
+          // Send WebSocket notification for ticket update
+          try {
+            ticketWsManager.broadcastTicketUpdate(
+              Number(params.data.id),
+              {
+                action: 'update',
+                changes: body.data,
+                updatedBy: userId,
+                timestamp: new Date().toISOString()
+              }
+            );
+          } catch (wsErr) {
+            fastify.log.warn({ wsErr }, 'Failed to send WebSocket notification for ticket update');
+          }
+          
           return { ticket_id: out };
         } catch (err: any) {
           fastify.log.error({ err }, 'Failed to update ticket with direct SQL');
@@ -692,6 +709,26 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
 
         try {
           const commentId = await attempt();
+          
+          // Send WebSocket notification for new comment
+          try {
+            ticketWsManager.broadcastTicketComment(
+              Number(params.data.id),
+              {
+                commentId,
+                messageType: body.data.message_type,
+                body: body.data.body,
+                bodyHtml: body.data.body_html,
+                contentFormat: body.data.content_format,
+                visibility: body.data.visibility,
+                authorId: userId,
+                timestamp: new Date().toISOString()
+              }
+            );
+          } catch (wsErr) {
+            fastify.log.warn({ wsErr }, 'Failed to send WebSocket notification for ticket comment');
+          }
+          
           return reply.code(201).send({ comment_id: commentId });
         } catch (e: any) {
           const msg = e?.message || '';
@@ -794,7 +831,7 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
       try {
-        const payload = { ticket_id: Number(params.data.id), ...body.data };
+        const payload = { ticket_id: Number(params.data.id), ...body.data, user_id: userId };
         const localReq = getRequestFromContext(request);
         const run = async (req: any) => {
           const r = await req.input('payload', JSON.stringify(payload)).execute('app.usp_UpsertVendorServiceRequest');
@@ -805,6 +842,113 @@ export async function registerTicketRoutes(fastify: FastifyInstance) {
       } catch (err) {
         fastify.log.error({ err }, 'Failed to upsert vendor service request');
         return reply.code(500).send({ error: 'Failed to upsert vendor service request' });
+      }
+    }
+  );
+
+  // GET /tickets/:id/service-requests - list vendor service requests for ticket
+  fastify.get(
+    '/tickets/:id/service-requests',
+    { preHandler: [fastify.authenticate] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const paramsSchema = z.object({ id: z.string() });
+      const params = paramsSchema.safeParse(request.params);
+      if (!params.success) return reply.code(400).send({ error: 'Invalid ticket id' });
+      const userId = (request as any).user?.sub;
+      if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+      try {
+        const localReq = getRequestFromContext(request);
+        const run = async (req: any) => {
+          req.input('ticket_id', Number(params.data.id));
+          const res = await req.execute('app.usp_ListVendorServiceRequests');
+          return res.recordset;
+        };
+        const rows = localReq ? await run(localReq) : await withRls(userId, (c) => run(c.request()));
+        return rows;
+      } catch (err) {
+        fastify.log.error({ err }, 'Failed to list vendor service requests');
+        return reply.code(500).send({ error: 'Failed to list vendor service requests' });
+      }
+    }
+  );
+
+  // GET /service-requests/:vsr_id - get single vendor service request
+  fastify.get(
+    '/service-requests/:vsr_id',
+    { preHandler: [fastify.authenticate] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const paramsSchema = z.object({ vsr_id: z.string() });
+      const params = paramsSchema.safeParse(request.params);
+      if (!params.success) return reply.code(400).send({ error: 'Invalid vsr id' });
+      const userId = (request as any).user?.sub; if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+      try {
+        const localReq = getRequestFromContext(request);
+        const run = async (req: any) => {
+          req.input('vsr_id', Number(params.data.vsr_id));
+          const res = await req.execute('app.usp_GetVendorServiceRequest');
+          return res.recordset?.[0] || null;
+        };
+        const row = localReq ? await run(localReq) : await withRls(userId, (c) => run(c.request()));
+        if (!row) return reply.code(404).send({ error: 'Not found' });
+        return row;
+      } catch (err) {
+        fastify.log.error({ err }, 'Failed to get vendor service request');
+        return reply.code(500).send({ error: 'Failed to get vendor service request' });
+      }
+    }
+  );
+
+  // GET /service-requests/:vsr_id/history - history
+  fastify.get(
+    '/service-requests/:vsr_id/history',
+    { preHandler: [fastify.authenticate] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const paramsSchema = z.object({ vsr_id: z.string() });
+      const params = paramsSchema.safeParse(request.params);
+      if (!params.success) return reply.code(400).send({ error: 'Invalid vsr id' });
+      const userId = (request as any).user?.sub; if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+      try {
+        const localReq = getRequestFromContext(request);
+        const run = async (req: any) => {
+          req.input('vsr_id', Number(params.data.vsr_id));
+            const res = await req.execute('app.usp_GetVendorServiceRequestHistory');
+            return res.recordset;
+        };
+        const rows = localReq ? await run(localReq) : await withRls(userId, (c) => run(c.request()));
+        return rows;
+      } catch (err) {
+        fastify.log.error({ err }, 'Failed to get vendor service request history');
+        return reply.code(500).send({ error: 'Failed to get vendor service request history' });
+      }
+    }
+  );
+
+  // PATCH /service-requests/:vsr_id/status - update status
+  fastify.patch(
+    '/service-requests/:vsr_id/status',
+    { preHandler: [fastify.authenticate] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const paramsSchema = z.object({ vsr_id: z.string() });
+      const bodySchema = z.object({ status: z.string(), notes: z.string().optional() });
+      const params = paramsSchema.safeParse(request.params);
+      const body = bodySchema.safeParse(request.body);
+      if (!params.success || !body.success) return reply.code(400).send({ error: 'Invalid payload' });
+      const userId = (request as any).user?.sub; if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+      try {
+        const localReq = getRequestFromContext(request);
+        const run = async (req: any) => {
+          req.input('vsr_id', Number(params.data.vsr_id));
+          req.input('new_status', body.data.status);
+          req.input('user_id', userId);
+          req.input('notes', body.data.notes ?? null);
+          await req.execute('app.usp_UpdateVendorServiceRequestStatus');
+          return { vsr_id: Number(params.data.vsr_id), status: body.data.status };
+        };
+        const result = localReq ? await run(localReq) : await withRls(userId, (c) => run(c.request()));
+        return result;
+      } catch (err) {
+        fastify.log.error({ err }, 'Failed to update vendor service request status');
+        return reply.code(500).send({ error: 'Failed to update vendor service request status' });
       }
     }
   );

@@ -13,23 +13,11 @@ import {
 } from '@chakra-ui/react';
 import { useAuth } from '@/components/auth/AuthProvider';
 
-export const UserProfile: FC = () => {
-  // const { user, signOut } = useAuth();
-  
-  // Mock user for development
-  const user = { 
-    email: 'admin@example.com',
-    profile: { 
-      full_name: 'Admin User',
-      is_admin: true,
-      role: 'admin',
-      avatar_url: undefined,
-      auth_provider: 'local'
-    }
-  };
-  const signOut = () => console.log('Sign out clicked');
 
-  // if (!user) return null;
+export const UserProfile: FC = () => {
+  const { user, signOut } = useAuth();
+
+  if (!user) return null;
 
   const profile = user.profile;
   const displayName = profile?.full_name || user.email.split('@')[0];

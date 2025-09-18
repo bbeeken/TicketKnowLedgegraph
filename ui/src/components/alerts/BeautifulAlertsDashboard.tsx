@@ -51,37 +51,27 @@ interface Alert {
   acknowledged?: boolean;
 }
 
-// Mock data - replace with real API calls
-const mockAlerts: Alert[] = [
-  {
-    id: '1',
-    site_id: 1006,
-    alert_id: 'ALERT-001',
-    raised_at: '2025-09-09T10:30:00Z',
-    code: 'ATG_COMM_ERR',
-    level: 'critical',
-    asset_id: 555,
-    asset_type: 'ATG',
-    zone_label: 'Island A',
-    ticket_id: 123,
-    site_name: 'Vermillion',
-    acknowledged: false,
-  },
-  {
-    id: '2',
-    site_id: 1006,
-    alert_id: 'ALERT-002',
-    raised_at: '2025-09-09T11:15:00Z',
-    code: 'FLOW_FAULT',
-    level: 'major',
-    asset_id: 321,
-    asset_type: 'Dispenser',
-    zone_label: 'Island B',
-    ticket_id: 124,
-    site_name: 'Vermillion',
-    acknowledged: true,
-  },
-];
+import { apiFetch } from '@/lib/api/client';
+
+const BeautifulAlertsDashboard: FC = () => {
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchAlerts = async () => {
+      setLoading(true);
+      try {
+        const data = await apiFetch('/alerts');
+        setAlerts(data);
+      } catch (e) {
+        setAlerts([]);
+      }
+      setLoading(false);
+    };
+    fetchAlerts();
+    const interval = setInterval(fetchAlerts, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
 const getSeverityColor = (level: string) => {
   switch (level.toLowerCase()) {
@@ -100,8 +90,8 @@ const getSeverityIcon = (level: string) => {
   }
 };
 
-export const BeautifulAlertsDashboard: FC = () => {
-  const [alerts, setAlerts] = useState<Alert[]>(mockAlerts);
+// ...existing code...
+// Only use the real API-driven BeautifulAlertsDashboard below
   const [filter, setFilter] = useState('all');
   const [selectedSite, setSelectedSite] = useState('all');
   const cardBg = useColorModeValue('white', 'gray.800');

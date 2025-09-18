@@ -62,7 +62,7 @@ class OpsGraphAuth {
         const existingToken = localStorage.getItem('opsgraph_token');
         if (!existingToken) {
           // Try to auto-login with admin test user
-          const loginResult = await this.signInWithLocal('admin@example.com', 'Admin123!');
+          const loginResult = await this.signInWithLocal('admin@test.com', 'Admin123!');
           if (loginResult.user) {
             return; // Successfully logged in
           }
@@ -118,27 +118,10 @@ class OpsGraphAuth {
     // Notify all listeners
     this.authStateListeners.forEach(listener => listener(user));
     
-    // Set session context for backend RLS
-    if (user) {
-      this.setSessionContext(user.id);
-    }
-  }
-
-  private async setSessionContext(userId: string) {
-    try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('opsgraph_token') : null;
-      if (!token) return;
-
-  await fetch(`${API_BASE_URL}/auth/session-context`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ userId })
-      });
-    } catch (error) {
-      console.error('Failed to set session context:', error);
+    // Session context removed - API now uses JWT bearer tokens for RLS
+    if (user && typeof window !== 'undefined' && !(window as any).__opsgraph_session_context_warning_shown) {
+      console.warn('[OpsGraph] Session context API removed. Backend now uses JWT bearer tokens for RLS. This warning will only show once.');
+      (window as any).__opsgraph_session_context_warning_shown = true;
     }
   }
 
@@ -170,26 +153,31 @@ class OpsGraphAuth {
   // Handle Microsoft callback
   async handleMicrosoftCallback(code: string, state: string): Promise<{ user: AuthUser | null; error: Error | null }> {
     try {
-      // TODO: Replace with actual API call to /api/auth/microsoft/callback
-      const response = await fetch('/api/auth/microsoft/callback', {
+      // Call the real API endpoint for Microsoft SSO
+      const response = await fetch(`${API_BASE_URL}/auth/microsoft/callback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, state })
+        body: JSON.stringify({ code })
       });
 
       if (!response.ok) {
-        throw new Error('Microsoft login failed');
+        let detail = '';
+        try { detail = (await response.json()).error || ''; } catch {}
+        throw new Error('Microsoft login failed' + (detail ? `: ${detail}` : ''));
       }
 
       const data = await response.json();
       const user = data.user as AuthUser;
-      
+
       // Store token and set user (only on client side)
       if (typeof window !== 'undefined') {
         localStorage.setItem('opsgraph_token', data.access_token);
+        if (data.refresh_token) {
+          localStorage.setItem('opsgraph_refresh_token', data.refresh_token);
+        }
       }
       this.setCurrentUser(user);
-      
+
       return { user, error: null };
     } catch (error) {
       return { user: null, error: error as Error };
@@ -230,6 +218,9 @@ class OpsGraphAuth {
       // Store token and set user (only on client side)
       if (typeof window !== 'undefined') {
         localStorage.setItem('opsgraph_token', data.access_token);
+        if (data.refresh_token) {
+          localStorage.setItem('opsgraph_refresh_token', data.refresh_token);
+        }
       }
       this.setCurrentUser(user);
       
@@ -254,7 +245,7 @@ class OpsGraphAuth {
         throw new Error('No authentication token available');
       }
 
-      const response = await fetch('/api/auth/local/create', {
+      const response = await fetch(`${API_BASE_URL}/auth/local/create`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -280,7 +271,7 @@ class OpsGraphAuth {
       // Call backend to invalidate session
       const token = typeof window !== 'undefined' ? localStorage.getItem('opsgraph_token') : null;
       if (token) {
-        await fetch('/api/auth/signout', {
+        await fetch(`${API_BASE_URL}/auth/signout`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -292,6 +283,7 @@ class OpsGraphAuth {
       // Clear local storage and state (only on client side)
       if (typeof window !== 'undefined') {
         localStorage.removeItem('opsgraph_token');
+        localStorage.removeItem('opsgraph_refresh_token');
       }
       this.setCurrentUser(null);
       
@@ -326,7 +318,7 @@ class OpsGraphAuth {
         throw new Error('No authentication token available');
       }
 
-      const response = await fetch(`/api/users/${userId}/profile`, {
+      const response = await fetch(`${API_BASE_URL}/users/${userId}/profile`, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -396,7 +388,7 @@ class OpsGraphAuth {
   async resetPassword(email: string): Promise<{ error: Error | null }> {
     try {
       // TODO: Replace with actual API call
-      const response = await fetch('/api/auth/local/reset-password', {
+      const response = await fetch(`${API_BASE_URL}/auth/local/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
@@ -421,7 +413,7 @@ class OpsGraphAuth {
         throw new Error('No authentication token available');
       }
 
-      const response = await fetch('/api/auth/local/change-password', {
+      const response = await fetch(`${API_BASE_URL}/auth/local/change-password`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,

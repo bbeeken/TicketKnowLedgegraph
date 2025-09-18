@@ -73,73 +73,54 @@ export default function AssetAnalyticsPage() {
   const textPrimary = useColorModeValue('gray.900', 'white');
   const textSecondary = useColorModeValue('gray.600', 'gray.300');
 
-  // Mock asset analytics data
-  const mockAssetData = {
-    id: assetId || '1',
-    name: 'Fuel Dispenser #3',
-    type: 'Fuel System',
-    location: 'Bay 3',
-    status: 'Active',
-    healthScore: 87,
-    lastMaintenance: '2025-08-15',
-    nextMaintenance: '2025-10-15',
-    uptimePercentage: 98.5,
-    averageResponseTime: 1.2,
-    maintenanceCost: 2450,
-    energyConsumption: 145.6
-  };
 
-  const performanceMetrics = [
-    { label: 'Uptime', value: '98.5%', trend: 'up', change: '+0.3%', color: 'green' },
-    { label: 'Response Time', value: '1.2s', trend: 'down', change: '-0.1s', color: 'green' },
-    { label: 'Error Rate', value: '0.8%', trend: 'down', change: '-0.2%', color: 'green' },
-    { label: 'Efficiency', value: '94.2%', trend: 'up', change: '+1.1%', color: 'green' }
-  ];
-
-  const alertsData = [
-    { severity: 'Warning', count: 3, color: 'yellow' },
-    { severity: 'Critical', count: 1, color: 'red' },
-    { severity: 'Info', count: 7, color: 'blue' }
-  ];
-
-  const maintenanceHistory = [
-    {
-      date: '2025-08-15',
-      type: 'Preventive',
-      description: 'Regular calibration and filter replacement',
-      cost: 350,
-      duration: '2 hours',
-      technician: 'John Smith'
-    },
-    {
-      date: '2025-07-22',
-      type: 'Corrective',
-      description: 'Display panel replacement',
-      cost: 890,
-      duration: '4 hours',
-      technician: 'Sarah Johnson'
-    },
-    {
-      date: '2025-06-30',
-      type: 'Preventive',
-      description: 'Software update and system check',
-      cost: 125,
-      duration: '1 hour',
-      technician: 'Mike Davis'
-    }
-  ];
-
-  const utilizationData = [
-    { hour: '00:00', usage: 12 },
-    { hour: '06:00', usage: 45 },
-    { hour: '12:00', usage: 89 },
-    { hour: '18:00', usage: 67 },
-    { hour: '24:00', usage: 23 }
-  ];
+  // State for dynamic data
+  const [assetData, setAssetData] = useState<any>(null);
+  const [performanceMetrics, setPerformanceMetrics] = useState<any[]>([]);
+  const [alertsData, setAlertsData] = useState<any[]>([]);
+  const [maintenanceHistory, setMaintenanceHistory] = useState<any[]>([]);
+  const [utilizationData, setUtilizationData] = useState<any[]>([]);
+  const [dataLoading, setDataLoading] = useState(true);
+  const [dataError, setDataError] = useState<string | null>(null);
 
   useEffect(() => {
-    setAsset(mockAssetData);
-  }, [assetId]); // eslint-disable-line react-hooks/exhaustive-deps
+    const fetchAll = async () => {
+      setDataLoading(true);
+      setDataError(null);
+      try {
+        // Asset analytics
+        const assetRes = await fetch(`/api/assets/${assetId}/analytics`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('opsgraph_token')}` }
+        });
+        if (!assetRes.ok) throw new Error('Failed to load asset analytics');
+        const assetJson = await assetRes.json();
+        setAssetData(assetJson.asset || assetJson);
+        setPerformanceMetrics(assetJson.performanceMetrics || []);
+        setUtilizationData(assetJson.utilizationData || []);
+
+        // Alerts for this asset
+        const alertsRes = await fetch(`/api/alerts?asset_id=${assetId}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('opsgraph_token')}` }
+        });
+        if (!alertsRes.ok) throw new Error('Failed to load alerts');
+        const alertsJson = await alertsRes.json();
+        setAlertsData(alertsJson.alerts || alertsJson);
+
+        // Maintenance history
+        const maintRes = await fetch(`/api/assets/${assetId}/maintenance`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('opsgraph_token')}` }
+        });
+        if (!maintRes.ok) throw new Error('Failed to load maintenance history');
+        const maintJson = await maintRes.json();
+        setMaintenanceHistory(maintJson.maintenance || maintJson);
+      } catch (err: any) {
+        setDataError(err.message || 'Failed to load analytics data');
+      } finally {
+        setDataLoading(false);
+      }
+    };
+    if (assetId) fetchAll();
+  }, [assetId]);
 
   const getHealthScoreColor = (score: number) => {
     if (score >= 80) return 'green';
@@ -172,9 +153,9 @@ export default function AssetAnalyticsPage() {
                 <Heading size="lg" color={textPrimary}>
                   📊 Asset Analytics
                 </Heading>
-                {asset && (
+                {assetData && (
                   <Text color={textSecondary}>
-                    {asset.name} • {asset.type} • {asset.location}
+                    {assetData.name} • {assetData.type} • {assetData.location}
                   </Text>
                 )}
               </VStack>
@@ -203,7 +184,11 @@ export default function AssetAnalyticsPage() {
 
           <Divider />
 
-          {loading ? (
+          {dataError ? (
+            <Box textAlign="center" py={8}>
+              <Alert status="error"><AlertIcon />{dataError}</Alert>
+            </Box>
+          ) : dataLoading ? (
             <Box textAlign="center" py={8}>
               <Spinner size="xl" />
               <Text mt={4} color={textSecondary}>Loading analytics data...</Text>
@@ -215,15 +200,15 @@ export default function AssetAnalyticsPage() {
                 <Card bg={cardBg} shadow="md" borderColor={borderColor}>
                   <CardBody textAlign="center">
                     <CircularProgress 
-                      value={asset?.healthScore || 0} 
-                      color={getHealthScoreColor(asset?.healthScore || 0)}
+                      value={assetData?.healthScore || 0} 
+                      color={getHealthScoreColor(assetData?.healthScore || 0)}
                       size="120px"
                       thickness="12px"
                     >
                       <CircularProgressLabel>
                         <VStack spacing={0}>
                           <Text fontSize="2xl" fontWeight="bold">
-                            {asset?.healthScore}
+                            {assetData?.healthScore}
                           </Text>
                           <Text fontSize="xs" color={textSecondary}>
                             Health Score
@@ -322,10 +307,12 @@ export default function AssetAnalyticsPage() {
                         <StatNumber fontSize="xl" color={textPrimary}>
                           {metric.value}
                         </StatNumber>
-                        <StatHelpText>
-                          <StatArrow type={metric.trend as any} />
-                          {metric.change}
-                        </StatHelpText>
+                        {metric.trend && (
+                          <StatHelpText>
+                            <StatArrow type={metric.trend as any} />
+                            {metric.change}
+                          </StatHelpText>
+                        )}
                       </Stat>
                     ))}
                   </SimpleGrid>
@@ -364,16 +351,16 @@ export default function AssetAnalyticsPage() {
                           <CardBody textAlign="center">
                             <VStack spacing={3}>
                               <Badge 
-                                colorScheme={alert.color} 
+                                colorScheme={alert.color || (alert.level === 'critical' ? 'red' : alert.level === 'major' ? 'yellow' : 'blue')} 
                                 size="lg" 
                                 px={3} 
                                 py={1}
                                 borderRadius="full"
                               >
-                                {alert.severity}
+                                {alert.severity || alert.level}
                               </Badge>
                               <Text fontSize="3xl" fontWeight="bold" color={textPrimary}>
-                                {alert.count}
+                                {alert.count || alert.total || 1}
                               </Text>
                               <Text fontSize="sm" color={textSecondary}>
                                 Last {selectedTimeRange} days
@@ -441,7 +428,7 @@ export default function AssetAnalyticsPage() {
                         <Tbody>
                           {maintenanceHistory.map((maintenance, index) => (
                             <Tr key={index}>
-                              <Td>{maintenance.date}</Td>
+                              <Td>{maintenance.date || maintenance.performed_at}</Td>
                               <Td>
                                 <Badge 
                                   colorScheme={maintenance.type === 'Preventive' ? 'green' : 'orange'}

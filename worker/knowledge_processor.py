@@ -11,6 +11,9 @@ from typing import Dict, List, Optional, Tuple
 import hashlib
 import mimetypes
 
+# Set up logger first
+logger = logging.getLogger(__name__)
+
 # Document processing
 try:
     import PyPDF2
@@ -43,8 +46,13 @@ except ImportError as e:
 
 # Database
 import pyodbc
-from app.db import get_connection
-from app.settings import settings
+try:
+    from app.db import get_connection
+    from app.settings import settings
+except ImportError as e:
+    logger.warning(f"App modules not available: {e}")
+    get_connection = None
+    settings = None
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +90,11 @@ class KnowledgeProcessor:
             Processing results with extracted text, embeddings, and snippets
         """
         try:
-            file_path = Path(file_path)
-            mime_type = mimetypes.guess_type(str(file_path))[0] or 'application/octet-stream'
+            file_path_obj = Path(file_path)
+            mime_type = mimetypes.guess_type(str(file_path_obj))[0] or 'application/octet-stream'
             
             result = {
-                'file_path': str(file_path),
+                'file_path': str(file_path_obj),
                 'mime_type': mime_type,
                 'extracted_text': '',
                 'image_analysis': '',
@@ -95,14 +103,14 @@ class KnowledgeProcessor:
             }
             
             if mime_type.startswith('image/'):
-                result.update(await self._process_image(file_path))
+                result.update(await self._process_image(file_path_obj))
             elif mime_type == 'application/pdf':
-                result.update(await self._process_pdf(file_path))
+                result.update(await self._process_pdf(file_path_obj))
             elif mime_type in ['application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                              'application/msword']:
-                result.update(await self._process_word_doc(file_path))
+                result.update(await self._process_word_doc(file_path_obj))
             elif mime_type.startswith('text/'):
-                result.update(await self._process_text_file(file_path))
+                result.update(await self._process_text_file(file_path_obj))
             else:
                 # Generic file - create metadata-based snippet
                 content = f"File: {metadata.get('title', 'Unknown')} - {metadata.get('description', 'No description')}"
@@ -118,6 +126,10 @@ class KnowledgeProcessor:
         """Process image files with OCR and visual analysis"""
         try:
             result = {'extracted_text': '', 'image_analysis': '', 'snippets': []}
+            
+            if Image is None or pytesseract is None:
+                logger.warning("Image processing libraries not available")
+                return result
             
             # OCR text extraction
             image = Image.open(file_path)
@@ -140,11 +152,16 @@ class KnowledgeProcessor:
             
         except Exception as e:
             logger.error(f"Error processing image {file_path}: {e}")
+            return {'extracted_text': '', 'image_analysis': '', 'snippets': []}
             return {'error': str(e)}
 
     async def _process_pdf(self, file_path: Path) -> Dict:
         """Extract text from PDF files"""
         try:
+            if PyPDF2 is None:
+                logger.warning("PyPDF2 not available for PDF processing")
+                return {'extracted_text': '', 'snippets': []}
+                
             text = ""
             with open(file_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
@@ -161,11 +178,15 @@ class KnowledgeProcessor:
             
         except Exception as e:
             logger.error(f"Error processing PDF {file_path}: {e}")
-            return {'error': str(e)}
+            return {'extracted_text': '', 'snippets': []}
 
     async def _process_word_doc(self, file_path: Path) -> Dict:
         """Extract text from Word documents"""
         try:
+            if docx2txt is None:
+                logger.warning("docx2txt not available for Word document processing")
+                return {'extracted_text': '', 'snippets': []}
+                
             text = docx2txt.process(str(file_path)).strip()
             snippets = await self._create_text_snippets(text)
             
@@ -176,6 +197,7 @@ class KnowledgeProcessor:
             
         except Exception as e:
             logger.error(f"Error processing Word document {file_path}: {e}")
+            return {'extracted_text': '', 'snippets': []}
             return {'error': str(e)}
 
     async def _process_text_file(self, file_path: Path) -> Dict:
@@ -195,9 +217,12 @@ class KnowledgeProcessor:
             logger.error(f"Error processing text file {file_path}: {e}")
             return {'error': str(e)}
 
-    def _analyze_image(self, image: Image.Image) -> str:
-        """Basic image analysis - placeholder for more advanced AI vision"""
+    def _analyze_image(self, image) -> str:
+        """Lightweight image metadata extraction (dimensions, mode, brightness)."""
         try:
+            if Image is None:
+                return "Image analysis not available"
+                
             width, height = image.size
             mode = image.mode
             
@@ -219,12 +244,8 @@ class KnowledgeProcessor:
                 else:
                     analysis_parts.append("Normal brightness")
             
-            # Placeholder for more advanced analysis:
-            # - Object detection
-            # - Scene classification
-            # - Text detection
-            # - Equipment identification
-            analysis_parts.append("Equipment/industrial setting detected (placeholder)")
+            # Advanced analysis (object detection / scene classification) intentionally not implemented here.
+            # If needed, integrate a vision service and append structured findings.
             
             return ". ".join(analysis_parts)
             
@@ -303,6 +324,10 @@ class KnowledgeProcessor:
             # Vector similarity search in database
             # This would use SQL Server's vector search capabilities or external vector database
             
+            if get_connection is None:
+                logger.warning("Database connection not available")
+                return []
+                
             async with get_connection() as conn:
                 cursor = conn.cursor()
                 
@@ -311,8 +336,7 @@ class KnowledgeProcessor:
                 cursor.execute("""
                     SELECT TOP (?) 
                         snippet_id, label, content, created_at,
-                        -- Placeholder for cosine similarity calculation
-                        0.0 as similarity_score
+                        0.0 as similarity_score -- similarity pending vector search implementation
                     FROM kg.KnowledgeSnippet 
                     WHERE content LIKE ?
                     ORDER BY created_at DESC
@@ -382,6 +406,10 @@ class KnowledgeWorker:
     async def _save_processing_results(self, attachment_id: int, result: Dict, metadata: Dict):
         """Save processing results to database"""
         try:
+            if get_connection is None:
+                logger.warning("Database connection not available for saving results")
+                return
+                
             async with get_connection() as conn:
                 cursor = conn.cursor()
                 

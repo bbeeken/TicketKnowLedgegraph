@@ -1,0 +1,303 @@
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { z } from 'zod';
+import { createVectorSearchService, VectorSearchOptions, VectorSearchResult, VectorSearchStats } from '../services/vectorSearch';
+
+// Request schemas
+const VectorSearchRequestSchema = z.object({
+  query: z.string().min(1).max(500),
+  limit: z.number().int().min(1).max(100).optional().default(20),
+  threshold: z.number().min(0).max(1).optional().default(0.1),
+  includeContent: z.boolean().optional().default(false),
+  filters: z.object({
+    entityType: z.enum(['ticket', 'asset', 'document', 'snippet']).optional(),
+    entityId: z.number().int().positive().optional(),
+    siteId: z.number().int().positive().optional(),
+    dateRange: z.object({
+      start: z.string().datetime(),
+      end: z.string().datetime()
+    }).optional(),
+    categories: z.array(z.string()).optional(),
+    tags: z.array(z.string()).optional()
+  }).optional()
+});
+
+const IndexContentRequestSchema = z.object({
+  type: z.enum(['ticket', 'asset', 'document']),
+  id: z.number().int().positive(),
+  title: z.string().min(1).max(255),
+  content: z.string().min(1).max(10000),
+  metadata: z.record(z.any()).optional()
+});
+
+// Response schemas
+const VectorSearchResponseSchema = z.object({
+  success: z.boolean(),
+  results: z.array(z.object({
+    id: z.number(),
+    type: z.enum(['ticket', 'asset', 'document', 'snippet']),
+    title: z.string(),
+    content: z.string().optional(),
+    summary: z.string().optional(),
+    similarity_score: z.number(),
+    metadata: z.object({
+      entity_id: z.number().optional(),
+      site_id: z.number().optional(),
+      category: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      created_at: z.date(),
+      updated_at: z.date().optional(),
+      mime_type: z.string().optional(),
+      author: z.string().optional()
+    })
+  })),
+  stats: z.object({
+    total_results: z.number(),
+    search_time_ms: z.number(),
+    embedding_model: z.string(),
+    provider: z.string(),
+    vector_dimension: z.number(),
+    used_fallback: z.boolean()
+  }),
+  message: z.string().optional()
+});
+
+export default async function vectorSearchRoutes(fastify: FastifyInstance) {
+  
+  // Comprehensive vector search endpoint
+  fastify.post('/vector/search', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const body = request.body as any;
+      const { query, limit = 20, threshold = 0.1, includeContent = false, filters } = body;
+      
+      // Convert date strings to Date objects if present
+      const searchOptions: VectorSearchOptions = {
+        query,
+        limit,
+        threshold,
+        includeContent,
+        filters: filters ? {
+          ...filters,
+          dateRange: filters.dateRange ? {
+            start: new Date(filters.dateRange.start),
+            end: new Date(filters.dateRange.end)
+          } : undefined
+        } : undefined
+      };
+
+      const vectorService = await createVectorSearchService(request);
+      const { results, stats } = await vectorService.search(searchOptions);
+
+      return reply.send({
+        success: true,
+        results,
+        stats,
+        message: results.length === 0 ? 'No results found matching your query' : undefined
+      });
+
+    } catch (error) {
+      fastify.log.error({ error }, 'Vector search failed');
+      return reply.status(500).send({
+        success: false,
+        results: [],
+        stats: {
+          total_results: 0,
+          search_time_ms: 0,
+          embedding_model: 'unknown',
+          provider: 'unknown',
+          vector_dimension: 0,
+          used_fallback: true
+        },
+        message: error instanceof Error ? error.message : 'Vector search failed'
+      });
+    }
+  });
+
+  // Similar content finder
+  fastify.get('/vector/similar/:type/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const params = request.params as any;
+      const query = request.query as any;
+      const { type, id } = params;
+      const { limit = 10, threshold = 0.3 } = query;
+      
+      const vectorService = await createVectorSearchService(request);
+      
+      // First, get the content of the target entity
+      const targetContent = await getEntityContent(vectorService, type as any, parseInt(id));
+      
+      if (!targetContent) {
+        return reply.status(404).send({
+          success: false,
+          results: [],
+          stats: {
+            total_results: 0,
+            search_time_ms: 0,
+            embedding_model: 'unknown',
+            provider: 'unknown',
+            vector_dimension: 0,
+            used_fallback: true
+          },
+          message: `${type} with ID ${id} not found`
+        });
+      }
+
+      // Search for similar content
+      const { results, stats } = await vectorService.search({
+        query: targetContent,
+        limit: limit + 1, // Get one extra to exclude the original
+        threshold,
+        includeContent: false
+      });
+
+      // Filter out the original entity
+      const filteredResults = results.filter(result => 
+        !(result.type === type && result.metadata.entity_id === parseInt(id))
+      ).slice(0, limit);
+
+      return reply.send({
+        success: true,
+        results: filteredResults,
+        stats: {
+          ...stats,
+          total_results: filteredResults.length
+        }
+      });
+
+    } catch (error) {
+      fastify.log.error({ error }, 'Similar content search failed');
+      return reply.status(500).send({
+        success: false,
+        results: [],
+        stats: {
+          total_results: 0,
+          search_time_ms: 0,
+          embedding_model: 'unknown',
+          provider: 'unknown',
+          vector_dimension: 0,
+          used_fallback: true
+        },
+        message: error instanceof Error ? error.message : 'Similar content search failed'
+      });
+    }
+  });
+
+  // Content indexing endpoint
+  fastify.post<{
+    Body: z.infer<typeof IndexContentRequestSchema>
+  }>('/vector/index', {
+    schema: {
+      description: 'Index content for vector search',
+      tags: ['Vector Search'],
+      body: IndexContentRequestSchema,
+      security: [{ bearerAuth: [] }]
+    }
+  }, async (request: FastifyRequest<{ Body: z.infer<typeof IndexContentRequestSchema> }>, reply: FastifyReply) => {
+    try {
+      const { type, id, title, content, metadata } = request.body;
+      
+      const vectorService = await createVectorSearchService(request);
+      const result = await vectorService.indexContent({
+        id,
+        type,
+        title,
+        text: content,
+        metadata
+      });
+
+      if (result.success) {
+        return reply.send({
+          success: true,
+          snippetId: result.snippetId,
+          message: 'Content indexed successfully'
+        });
+      } else {
+        return reply.status(500).send({
+          success: false,
+          message: result.error || 'Indexing failed'
+        });
+      }
+
+    } catch (error) {
+      fastify.log.error({ error }, 'Content indexing failed');
+      return reply.status(500).send({
+        success: false,
+        message: error instanceof Error ? error.message : 'Content indexing failed'
+      });
+    }
+  });
+
+  // Batch search endpoint for multiple queries
+  fastify.post<{
+    Body: { queries: string[]; options?: Partial<VectorSearchOptions> }
+  }>('/vector/batch-search', {
+    schema: {
+      description: 'Perform batch vector search for multiple queries',
+      tags: ['Vector Search'],
+      body: z.object({
+        queries: z.array(z.string().min(1).max(500)).min(1).max(10),
+        options: z.object({
+          limit: z.number().int().min(1).max(50).optional().default(10),
+          threshold: z.number().min(0).max(1).optional().default(0.2),
+          includeContent: z.boolean().optional().default(false)
+        }).optional()
+      }),
+      security: [{ bearerAuth: [] }]
+    }
+  }, async (request: FastifyRequest<{
+    Body: { queries: string[]; options?: Partial<VectorSearchOptions> }
+  }>, reply: FastifyReply) => {
+    try {
+      const { queries, options = {} } = request.body;
+      
+      const vectorService = await createVectorSearchService(request);
+      const batchResults = [];
+
+      for (const query of queries) {
+        try {
+          const searchOptions: VectorSearchOptions = {
+            query,
+            limit: options.limit || 10,
+            threshold: options.threshold || 0.2,
+            includeContent: options.includeContent || false,
+            filters: options.filters
+          };
+
+          const { results, stats } = await vectorService.search(searchOptions);
+          batchResults.push({ query, results, stats });
+        } catch (error) {
+          batchResults.push({ 
+            query, 
+            results: [], 
+            stats: { error: error instanceof Error ? error.message : 'Unknown error' }
+          });
+        }
+      }
+
+      return reply.send({
+        success: true,
+        results: batchResults
+      });
+
+    } catch (error) {
+      fastify.log.error({ error }, 'Batch vector search failed');
+      return reply.status(500).send({
+        success: false,
+        results: [],
+        message: error instanceof Error ? error.message : 'Batch search failed'
+      });
+    }
+  });
+}
+
+// Helper function to get entity content for similarity search
+async function getEntityContent(vectorService: any, type: 'ticket' | 'asset' | 'document' | 'snippet', id: number): Promise<string | null> {
+  // This would need to be implemented based on your database schema
+  // For now, return a placeholder
+  try {
+    // Implementation would fetch the actual content based on type and id
+    // and return the text content suitable for embedding
+    return `Content for ${type} ${id}`;
+  } catch (error) {
+    return null;
+  }
+}
