@@ -338,3 +338,35 @@ export function sendError(
   reply.code(status).send(body);
 }
 ```
+
+## Vendor Service Requests (Ticket Detail Enhancement)
+
+The ticket detail UI now includes a dedicated panel for vendor service requests:
+
+Component: `ui/src/components/tickets/VendorServiceRequestsPanel.tsx`
+
+Backend endpoints (Fastify):
+- `GET /api/tickets/:ticket_id/service-requests` – list service requests for a ticket
+- `POST /api/tickets/:ticket_id/service-request` – create or update (upsert) a service request
+- `GET /api/service-requests/:vsr_id` – fetch a single service request
+- `GET /api/service-requests/:vsr_id/history` – immutable change history
+- `PATCH /api/service-requests/:vsr_id/status` – atomic status (and optional notes) update
+
+Persistence objects (migration `31_vendor_service_requests.sql`):
+- `app.VendorServiceRequestHistory`
+- Procedures: `app.usp_ListVendorServiceRequests`, `app.usp_GetVendorServiceRequest`, `app.usp_GetVendorServiceRequestHistory`, `app.usp_UpdateVendorServiceRequestStatus`, enhanced `app.usp_UpsertVendorServiceRequest` (now records history & user attribution).
+
+History captures: change_type (created|updated|status_change), old/new status, old/new notes, user id, timestamp.
+
+Front-end behaviors:
+- Inline status select triggers PATCH call with optimistic UI update & revert on failure.
+- Creation modal supports vendor, request type, status, notes.
+- History modal shows chronological changes for selected request.
+- Per-vendor latest notes cached in `localStorage` key pattern: `ticket_<ticketId>_vendorNotes`.
+
+RLS: Requests execute under the existing session context; future hardening may add explicit predicates if vendor scoping requirements emerge.
+
+Next potential enhancements:
+- Optimistic concurrency using rowversion on `VendorServiceRequests`.
+- SSE/WebSocket events for real-time updates.
+- Linking service requests to outbound vendor integration workflows.

@@ -24,17 +24,19 @@ export function WebSocketStatus({ showText = false, variant = 'minimal' }: WebSo
   const connectingColor = useColorModeValue('yellow.500', 'yellow.300');
   const disconnectedColor = useColorModeValue('gray.400', 'gray.500');
   const errorColor = useColorModeValue('red.500', 'red.300');
+  const degradedColor = useColorModeValue('orange.500', 'orange.300');
   
   const borderColor = useColorModeValue('gray.200', 'gray.600');
   const bgColor = useColorModeValue('white', 'gray.800');
   const textColor = useColorModeValue('gray.600', 'gray.400');
   const mutedTextColor = useColorModeValue('gray.500', 'gray.500');
 
-  const statusColor = {
+  const statusColor: Record<'connected' | 'connecting' | 'disconnected' | 'error' | 'degraded', string> = {
     connected: connectedColor,
     connecting: connectingColor,
     disconnected: disconnectedColor,
-    error: errorColor
+    error: errorColor,
+    degraded: degradedColor
   };
 
   const getStatusIcon = () => {
@@ -43,6 +45,8 @@ export function WebSocketStatus({ showText = false, variant = 'minimal' }: WebSo
         return FiWifi;
       case 'connecting':
         return FiLoader;
+      case 'degraded':
+        return FiWifi; // Same as connected but will have orange color
       case 'disconnected':
       case 'error':
       default:
@@ -56,6 +60,8 @@ export function WebSocketStatus({ showText = false, variant = 'minimal' }: WebSo
         return 'Real-time updates active';
       case 'connecting':
         return 'Connecting...';
+      case 'degraded':
+        return 'Degraded mode - some features limited';
       case 'disconnected':
         return 'Disconnected';
       case 'error':
@@ -71,6 +77,8 @@ export function WebSocketStatus({ showText = false, variant = 'minimal' }: WebSo
         return 'Live';
       case 'connecting':
         return 'Connecting';
+      case 'degraded':
+        return 'Degraded';
       case 'disconnected':
         return 'Offline';
       case 'error':
@@ -108,6 +116,7 @@ export function WebSocketStatus({ showText = false, variant = 'minimal' }: WebSo
             colorScheme={
               connectionState === 'connected' ? 'green' : 
               connectionState === 'connecting' ? 'yellow' : 
+              connectionState === 'degraded' ? 'orange' :
               connectionState === 'error' ? 'red' : 'gray'
             }
             variant="subtle"

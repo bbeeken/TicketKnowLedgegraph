@@ -223,6 +223,41 @@ export async function registerAssetRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // GET /assets/:id/maintenance/notes - get latest maintenance notes
+  fastify.get('/assets/:id/maintenance/notes', { preHandler: [fastify.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const id = Number((request.params as any).id);
+    const userId = (request as any).user?.sub;
+    if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+    try {
+      const localReq = getRequestFromContext(request);
+      const sql = `
+        SELECT TOP 1 notes, created_at, performed_at, performed_by
+        FROM app.AssetMaintenance 
+        WHERE asset_id = @id AND notes IS NOT NULL
+        ORDER BY created_at DESC
+      `;
+      let res: any;
+      if (localReq) res = await localReq.input('id', id).query(sql);
+      else res = await withRls(userId, async (conn) => conn.request().input('id', id).query(sql));
+      
+      const record = res.recordset[0];
+      if (!record) {
+        return reply.code(200).send({ notes: null, created_at: null });
+      }
+      
+      return reply.code(200).send({
+        notes: record.notes,
+        created_at: record.created_at,
+        performed_at: record.performed_at,
+        performed_by: record.performed_by
+      });
+    } catch (err) {
+      fastify.log.error({ err }, 'Failed to get asset maintenance notes');
+      return reply.code(500).send({ error: 'Failed to get asset maintenance notes' });
+    }
+  });
+
   // PATCH /assets/:id/status - update asset status
   fastify.patch('/assets/:id/status', { preHandler: [fastify.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const id = Number((request.params as any).id);

@@ -36,24 +36,33 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
   } = options;
 
   const [isConnected, setIsConnected] = useState(false);
-  const [connectionState, setConnectionState] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
+  const [connectionState, setConnectionState] = useState<'disconnected' | 'connecting' | 'connected' | 'error' | 'degraded'>('disconnected');
   const [lastMessage, setLastMessage] = useState<TicketWebSocketMessage | null>(null);
   const [lastCloseCode, setLastCloseCode] = useState<number | null>(null);
   const [lastCloseReason, setLastCloseReason] = useState<string | null>(null);
   const [reconnectDelay, setReconnectDelay] = useState<number>(0);
   const [subscriptions, setSubscriptions] = useState<WebSocketSubscription>({});
+  const [connectionQuality, setConnectionQuality] = useState<'good' | 'poor' | 'failed'>('good');
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const connectionAttemptsRef = useRef(0);
   const maxReconnectAttempts = 10;
+  const maxConnectionAttempts = 3; // Limit initial connection attempts
+  const degradedModeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const router = useRouter();
+
+  const getAuthToken = useCallback(() => {
+    return localStorage.getItem('opsgraph_token') || '';
+  }, []);
 
   const getWebSocketUrl = useCallback(() => {
     const loc = window.location;
     const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
-    let base = process.env.NEXT_PUBLIC_API_BASE_URL || '/api';
+    // Allow explicit WS base override (e.g. when API base passes through a proxy but WS needs direct host)
+    let base = process.env.NEXT_PUBLIC_WS_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || '/api';
     // If base is relative, prepend current origin
     if (base.startsWith('/')) {
       base = `${loc.origin}${base}`;
@@ -64,18 +73,32 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
       base = base.replace(/\/$/, '') + '/api';
     }
     const token = getAuthToken();
-    let url = base.replace(/^http/, protocol.startsWith('wss') ? 'https' : 'http') + '/ws/tickets';
+    let url: string;
+    try {
+      // Use URL API for robust manipulation
+      const u = new URL(base);
+      u.protocol = protocol;
+      // Normalise pathname (remove trailing slash)
+      u.pathname = u.pathname.replace(/\/$/, '') + '/ws/tickets';
+      url = u.toString();
+    } catch {
+      // Fallback to previous string replacement logic
+      url = base.replace(/^http/, protocol.startsWith('wss') ? 'https' : 'http') + '/ws/tickets';
+      url = url.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
+    }
     if (token) {
       // append token as query param (avoid adding twice)
       url += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
     }
-    // Convert http(s) prefix to ws(s)
-    return url.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
-  }, []);
-
-  const getAuthToken = useCallback(() => {
-    return localStorage.getItem('opsgraph_token') || '';
-  }, []);
+    if (process.env.NODE_ENV !== 'production') {
+      // Helpful one-time debug (throttle by window flag)
+      if (!(window as any).__opsgraph_ws_url_logged) {
+        console.debug('[TicketWS] Connecting to', url, { base, protocol });
+        (window as any).__opsgraph_ws_url_logged = true;
+      }
+    }
+    return url;
+  }, [getAuthToken]);
 
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastPongRef = useRef<number>(Date.now());
@@ -114,30 +137,44 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
       wsRef.current = existing;
       setIsConnected(true);
       setConnectionState('connected');
+      setConnectionQuality('good');
       return;
     }
-    // Prevent connection storms
+    
+    // Prevent connection storms and implement degraded mode
     if (wsRef.current?.readyState === WebSocket.OPEN || 
         wsRef.current?.readyState === WebSocket.CONNECTING) {
-      console.log('WebSocket already open or connecting, skipping new connection');
       return;
     }
 
+    // If we've failed multiple times, enter degraded mode
+    if (connectionAttemptsRef.current >= maxConnectionAttempts) {
+      setConnectionState('degraded');
+      setConnectionQuality('failed');
+      // Try again after 5 minutes in degraded mode
+      if (degradedModeTimeoutRef.current) clearTimeout(degradedModeTimeoutRef.current);
+      degradedModeTimeoutRef.current = setTimeout(() => {
+        connectionAttemptsRef.current = 0;
+        if (autoReconnect) connect();
+      }, 300000); // 5 minutes
+      return;
+    }
+
+    connectionAttemptsRef.current++;
     setConnectionState('connecting');
     
     try {
       const wsUrl = getWebSocketUrl();
       const token = getAuthToken();
       
-      // Create WebSocket with auth header (note: this may not work in all browsers)
-      // Alternative: send token in first message after connection
       const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {
-        console.log('WebSocket connected');
         setIsConnected(true);
         setConnectionState('connected');
+        setConnectionQuality('good');
         reconnectAttemptsRef.current = 0;
+        connectionAttemptsRef.current = 0; // Reset on successful connection
         setLastCloseCode(null);
         setLastCloseReason(null);
         setReconnectDelay(0);
@@ -164,11 +201,11 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
           // Handle different message types
           switch (message.type) {
             case 'connected':
-              console.log('WebSocket connection confirmed:', message.payload);
+              // Silent success - no console spam
               break;
               
             case 'subscribed':
-              console.log('WebSocket subscription confirmed:', message.payload);
+              // Silent success - no console spam
               break;
               
             case 'ticket_update':
@@ -196,15 +233,20 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
               break;
               
             default:
-              console.log('Unknown WebSocket message type:', message.type);
+              // Only log unknown types in development
+              if (process.env.NODE_ENV === 'development') {
+                console.log('Unknown WebSocket message type:', message.type);
+              }
           }
         } catch (err) {
-          console.error('Failed to parse WebSocket message:', err);
+          // Only log parse errors in development
+          if (process.env.NODE_ENV === 'development') {
+            console.error('Failed to parse WebSocket message:', err);
+          }
         }
       };
 
       ws.onclose = (event) => {
-        console.log('WebSocket disconnected:', event.code, event.reason);
         setIsConnected(false);
         setConnectionState('disconnected');
         setLastCloseCode(event.code);
@@ -212,16 +254,29 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
         wsRef.current = null;
         stopHeartbeat();
         
-        // Auto-reconnect if enabled and not a clean close
+        // Determine connection quality based on close code
+        if (event.code === 1000) {
+          setConnectionQuality('good'); // Clean close
+        } else if (event.code >= 1001 && event.code <= 1006) {
+          setConnectionQuality('poor'); // Network issues
+        } else {
+          setConnectionQuality('failed'); // Server/auth issues
+        }
+        
+        // Auto-reconnect with intelligent backoff
         if (autoReconnect && event.code !== 1000 && reconnectAttemptsRef.current < maxReconnectAttempts) {
           reconnectAttemptsRef.current++;
-          // Exponential backoff with cap (1s,2s,4s,... up to 30s) then add jitter ±10%
-            const attempt = reconnectAttemptsRef.current;
-            const baseDelay = Math.min(30000, 1000 * Math.pow(2, attempt - 1));
-            const jitter = baseDelay * (Math.random() * 0.2 - 0.1);
-            const delay = Math.round(baseDelay + jitter);
-            setReconnectDelay(delay);
+          const attempt = reconnectAttemptsRef.current;
+          const baseDelay = Math.min(30000, 1000 * Math.pow(2, attempt - 1));
+          const jitter = baseDelay * (Math.random() * 0.2 - 0.1);
+          const delay = Math.round(baseDelay + jitter);
+          setReconnectDelay(delay);
+          
+          // Only log reconnection attempts in development
+          if (process.env.NODE_ENV === 'development') {
             console.log(`Attempting to reconnect (${attempt}/${maxReconnectAttempts}) in ${delay}ms...`);
+          }
+          
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
           }, delay);
@@ -229,14 +284,21 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
       };
 
       ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        // Only log detailed errors in development
+        if (process.env.NODE_ENV === 'development') {
+          console.error('WebSocket error:', error, { url: wsUrl, readyState: ws.readyState });
+        }
         setConnectionState('error');
+        setConnectionQuality('failed');
       };
       wsRef.current = ws;
       try { (window as any)[globalKey] = ws; } catch {}
     } catch (err) {
-      console.error('Failed to create WebSocket connection:', err);
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Failed to create WebSocket connection:', err);
+      }
       setConnectionState('error');
+      setConnectionQuality('failed');
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [getWebSocketUrl, getAuthToken, onTicketUpdate, onTicketComment, onTicketStatusChange, onTicketAssignment, autoReconnect, reconnectInterval, startHeartbeat, stopHeartbeat]);
@@ -245,6 +307,10 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
+    }
+    if (degradedModeTimeoutRef.current) {
+      clearTimeout(degradedModeTimeoutRef.current);
+      degradedModeTimeoutRef.current = null;
     }
     stopHeartbeat();
     
@@ -256,11 +322,16 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
     
     setIsConnected(false);
     setConnectionState('disconnected');
+    setConnectionQuality('good');
+    connectionAttemptsRef.current = 0;
   }, [stopHeartbeat]);
 
   const subscribe = useCallback((subscription: WebSocketSubscription) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      console.warn('Cannot subscribe: WebSocket not connected');
+      // Silent failure in production - graceful degradation
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('Cannot subscribe: WebSocket not connected');
+      }
       return;
     }
 
@@ -279,7 +350,10 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
 
   const unsubscribe = useCallback((subscription: WebSocketSubscription) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      console.warn('Cannot unsubscribe: WebSocket not connected');
+      // Silent failure in production - graceful degradation
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('Cannot unsubscribe: WebSocket not connected');
+      }
       return;
     }
 
@@ -360,6 +434,7 @@ export function useTicketWebSocket(options: UseTicketWebSocketOptions = {}) {
   return {
     isConnected,
     connectionState,
+    connectionQuality,
     lastMessage,
     lastCloseCode,
     lastCloseReason,

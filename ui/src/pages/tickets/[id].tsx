@@ -23,11 +23,13 @@ import {
   type TicketWatcher,
   type TicketAttachment
 } from '@/lib/api/tickets';
-import { getVendors, upsertVendorServiceRequest, type Vendor } from '@/lib/api/vendors';
-import { getAssets, getAsset, createAsset, updateAsset, updateAssetStatus, type Asset, type CreateAssetPayload } from '@/lib/api/assets';
+import { getVendors, type Vendor } from '@/lib/api/vendors';
+import { VendorServiceRequestsPanel } from '@/components/tickets/VendorServiceRequestsPanel';
+import { getAssets, getAsset, createAsset, updateAsset, updateAssetStatus, getAssetMaintenanceNotes, type Asset, type CreateAssetPayload } from '@/lib/api/assets';
 import { ContactInfoPopover } from '@/components/shared/ContactInfoPopover';
 import { RichTextEditor } from '@/components/shared/RichTextEditor';
 import { AttachmentManager } from '@/components/shared/AttachmentManager';
+import { apiFetch } from '@/lib/api/client';
 import {
   Box,
   Button,
@@ -124,7 +126,8 @@ import {
   TagIcon,
   ChevronRightIcon,
   PlusIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  ArrowDownTrayIcon
 } from '@heroicons/react/24/outline';
 import { useAuth } from '@/components/auth/AuthProvider';
 
@@ -143,6 +146,12 @@ export default function TicketDetailPage() {
   const [tabIndex, setTabIndex] = useState(0);
   const editorRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
+  
+  // Quick actions state
+  const [reminderOpen, setReminderOpen] = useState(false);
+  const [reminderDate, setReminderDate] = useState('');
+  const [reminderTime, setReminderTime] = useState('');
+  const [reminderNote, setReminderNote] = useState('');
 
   // WebSocket integration for real-time updates
   const {
@@ -263,8 +272,7 @@ export default function TicketDetailPage() {
   const assetSearchInputRef = useRef<HTMLInputElement>(null);
 
   // Service Request Management state
-  const [serviceRequests, setServiceRequests] = useState<any[]>([]);
-  const [serviceRequestOpen, setServiceRequestOpen] = useState(false);
+  // Service requests now handled by extracted component
 
   // Attachments state
   const [attachments, setAttachments] = useState<TicketAttachment[]>([]);
@@ -296,7 +304,7 @@ export default function TicketDetailPage() {
   const siteContactBg = useColorModeValue('green.50', 'green.900');
   const siteContactHover = useColorModeValue('green.100', 'green.800');
 
-  const handleUnlinkAsset = async (assetId: number) => {
+  const handleTicketAssetUnlink = async (assetId: number) => {
     if (!id) return;
     
     try {
@@ -412,7 +420,7 @@ export default function TicketDetailPage() {
     }
   };
 
-  // Helper functions for asset display
+  // Helper functions for asset display (single source; cache-bust marker 2025-09-18)
   const getAssetTypeIcon = (type: string) => {
     switch (type?.toLowerCase()) {
       case 'fuel': return '⛽';
@@ -437,6 +445,13 @@ export default function TicketDetailPage() {
       default: return 'gray';
     }
   };
+
+  // (Duplicate watcher/header color & ticket state block removed)
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  // Vendor notes managed inside component (localStorage persistence retained there)
+  const [quickSaving, setQuickSaving] = useState<Record<string, boolean>>({});
+
+  // Removed: service request loading logic moved to component
 
   // Normalize API-provided status (often uppercase) to match select option values
   const normalizeAssetStatus = (s?: string) => {
@@ -600,62 +615,90 @@ export default function TicketDetailPage() {
     
     try {
       await deleteTicketAttachment(Number(id), attachmentId);
+      toast({
+        status: 'success',
+        title: 'Attachment deleted',
+        description: 'The attachment has been deleted successfully.'
+      });
+      // Refresh attachments list
+      await loadAttachments();
     } catch (error: any) {
       console.error('Error deleting attachment:', error);
+      toast({
+        status: 'error',
+        title: 'Failed to delete attachment',
+        description: error?.body?.message || error?.message || 'Could not delete the attachment. Please try again.'
+      });
       throw error;
     }
   };
 
-  // Service Request handlers
-  const handleCreateServiceRequest = async () => {
-    if (!id || !vsrForm.vendor_id || !vsrForm.request_type) {
-      toast({
-        status: 'error',
-        title: 'Missing required fields',
-        description: 'Please select a vendor and enter request type'
-      });
-      return;
-    }
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
 
     try {
-      const result = await upsertVendorServiceRequest({
-        ticket_id: Number(id),
-        vendor_id: vsrForm.vendor_id,
-        request_type: vsrForm.request_type,
-        status: vsrForm.status,
-        notes: vsrForm.notes
-      });
+      await handleUploadAttachment(file, 'documentation');
+      // Clear the input so the same file can be uploaded again if needed
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    } catch (error) {
+      // Error handling is already done in handleUploadAttachment
+      console.error('File upload error:', error);
+    }
+  };
 
-      const newRequest = {
-        vsr_id: result.vsr_id,
-        ticket_id: Number(id),
-        vendor_id: vsrForm.vendor_id,
-        vendor_name: vendors.find(v => v.vendor_id === vsrForm.vendor_id)?.name || 'Unknown',
-        request_type: vsrForm.request_type,
-        status: vsrForm.status,
-        notes: vsrForm.notes,
-        created_at: new Date().toISOString()
-      };
-
-      setServiceRequests(prev => [...prev, newRequest]);
-      // persist notes per vendor
-      setVendorNotesMap(prev => ({ ...prev, [vsrForm.vendor_id!]: vsrForm.notes }));
-      setServiceRequestOpen(false);
-      setVsrForm({ vendor_id: null, request_type: '', status: 'open', notes: '' });
-
+  const handlePreviewAttachment = async (attachmentId: number, filename: string, mimeType: string) => {
+    if (!id) return;
+    
+    try {
+      const response = await downloadTicketAttachment(Number(id), attachmentId);
+      
+      // Handle different response formats
+      let blob: Blob;
+      if (response instanceof Blob) {
+        blob = response;
+      } else if (response.data instanceof Blob) {
+        blob = response.data;
+      } else {
+        // If response is not a blob, try to convert it
+        blob = new Blob([response.data || response]);
+      }
+      
+      const url = window.URL.createObjectURL(blob);
+      
+      // For images, PDFs, and text files, open in a new tab for preview
+      if (mimeType.startsWith('image/') || mimeType === 'application/pdf' || mimeType.startsWith('text/')) {
+        window.open(url, '_blank');
+      } else {
+        // For other files, download directly
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      }
+      
       toast({
         status: 'success',
-        title: 'Service request created',
-        description: 'Vendor service request has been created successfully'
+        title: 'Preview opened',
+        description: `Opening "${filename}"`
       });
     } catch (error: any) {
+      console.error('Error previewing attachment:', error);
       toast({
         status: 'error',
-        title: 'Failed to create service request',
-        description: error.message
+        title: 'Preview failed',
+        description: error?.body?.message || error?.message || 'Could not preview the file. Please try again.'
       });
     }
   };
+
+  // Service Request handlers
+  // Removed: creation handled in component
 
   const loadVendors = useCallback(async () => {
     try {
@@ -666,19 +709,8 @@ export default function TicketDetailPage() {
     }
   }, []);
 
-  const loadServiceRequests = useCallback(async () => {
-    if (!id) return;
-    try {
-      // Note: Would need an API endpoint to fetch service requests for a ticket
-      // For now, we'll initialize as empty - this would be implemented with a real endpoint
-      setServiceRequests([]);
-    } catch (error) {
-      console.error('Failed to load service requests:', error);
-    }
-  }, [id]);
-
-  const watcherBg = useColorModeValue('gray.50', 'gray.700');
-  const watcherHover = useColorModeValue('gray.100', 'gray.600');
+  const ticketWatcherBg = useColorModeValue('gray.50', 'gray.700');
+  const ticketWatcherHover = useColorModeValue('gray.100', 'gray.600');
   
   // Header colors
   const headerBg = useColorModeValue('gray.100', 'gray.700');
@@ -692,10 +724,6 @@ export default function TicketDetailPage() {
   const [addWatcherOpen, setAddWatcherOpen] = useState<boolean>(false);
   const [newWatcher, setNewWatcher] = useState<{ user_id?: number | null; name?: string; email?: string; watcher_type?: 'interested' | 'collaborator' | 'site_contact' | 'assignee_backup'; }>({ watcher_type: 'interested' });
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [vendors, setVendors] = useState<Vendor[]>([]);
-  const [vsrForm, setVsrForm] = useState<{ vendor_id: number | null; request_type: string; status: string; notes: string }>({ vendor_id: null, request_type: '', status: 'open', notes: '' });
-  const [vendorNotesMap, setVendorNotesMap] = useState<Record<number, string>>({});
-  const [quickSaving, setQuickSaving] = useState<Record<string, boolean>>({});
 
   // Filter assets based on search term
   const filteredAssets = useMemo(() => {
@@ -802,9 +830,8 @@ export default function TicketDetailPage() {
         // ignore
       }
     })();
-    // Load service requests for this ticket
-    loadServiceRequests();
-  }, [id, toast, loadServiceRequests]);
+  // (Service requests now handled solely inside VendorServiceRequestsPanel)
+  }, [id, toast]);
 
   // Helper: determine if current user is watching
   useEffect(() => {
@@ -847,6 +874,104 @@ export default function TicketDetailPage() {
       });
     } catch (e: any) {
       toast({ status: 'error', title: 'Failed to post message', description: e.message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Quick action handlers
+  const handleAssignUser = async (userId: number | null) => {
+    try {
+      setSubmitting(true);
+      await updateTicketFields(Number(id), { assignee_user_id: userId === null ? undefined : userId });
+      await loadTicket(); // Refresh ticket data
+      toast({ 
+        status: 'success', 
+        title: 'Assignment updated', 
+        description: userId ? 'Ticket assigned successfully' : 'Ticket unassigned' 
+      });
+    } catch (e: any) {
+      toast({ status: 'error', title: 'Failed to update assignment', description: e.message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCategoryChange = async (categoryId: number | null) => {
+    try {
+      setSubmitting(true);
+      await updateTicketFields(Number(id), { category_id: categoryId === null ? undefined : categoryId });
+      await loadTicket(); // Refresh ticket data
+      toast({ 
+        status: 'success', 
+        title: 'Category updated', 
+        description: 'Ticket category changed successfully' 
+      });
+    } catch (e: any) {
+      toast({ status: 'error', title: 'Failed to update category', description: e.message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handlePrivacyChange = async (privacyLevel: string) => {
+    try {
+      setSubmitting(true);
+      await updateTicketFields(Number(id), { privacy_level: privacyLevel });
+      await loadTicket(); // Refresh ticket data
+      toast({ 
+        status: 'success', 
+        title: 'Privacy updated', 
+        description: 'Ticket privacy level changed successfully' 
+      });
+    } catch (e: any) {
+      toast({ status: 'error', title: 'Failed to update privacy', description: e.message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSetReminder = async () => {
+    if (!reminderDate || !reminderTime || !user?.id) {
+      toast({ status: 'error', title: 'Invalid reminder', description: 'Please fill in all fields' });
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      
+      // Combine date and time
+      const reminderDateTime = new Date(`${reminderDate}T${reminderTime}`);
+      
+      // Create reminder via API (we'll need to implement this endpoint)
+      const reminder = {
+        ticket_id: Number(id),
+        user_id: Number(user.id),
+        reminder_time: reminderDateTime.toISOString(),
+        note: reminderNote || `Reminder for ticket #${ticket?.ticket_id}`,
+        is_active: true
+      };
+
+      // For now, we'll store it using a generic API call
+      // In the future, this should be a dedicated reminder endpoint
+      await apiFetch('/reminders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reminder)
+      });
+
+      setReminderOpen(false);
+      setReminderDate('');
+      setReminderTime('');
+      setReminderNote('');
+      
+      toast({ 
+        status: 'success', 
+        title: 'Reminder set', 
+        description: `You will be reminded on ${reminderDateTime.toLocaleDateString()} at ${reminderDateTime.toLocaleTimeString()}` 
+      });
+    } catch (e: any) {
+      toast({ status: 'error', title: 'Failed to set reminder', description: e.message });
     } finally {
       setSubmitting(false);
     }
@@ -1038,6 +1163,58 @@ export default function TicketDetailPage() {
         }
       } else {
         toast({ status: 'error', title: 'Failed to add contact', description: e.message });
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleWatchTicket = async () => {
+    if (!user?.id || !id) return;
+    
+    try {
+      setSubmitting(true);
+      
+      // Check if user is already watching
+      const isAlreadyWatching = watchers.some(w => w.user_id === Number(user.id));
+      if (isAlreadyWatching) {
+        toast({ 
+          status: 'info', 
+          title: 'Already watching', 
+          description: 'You are already watching this ticket' 
+        });
+        return;
+      }
+
+      await addTicketWatcher(Number(id), {
+        user_id: Number(user.id),
+        name: user.profile?.full_name || null,
+        email: user.email || null,
+        watcher_type: 'interested'
+      });
+      
+      // Refresh watchers list
+      const ws = await getTicketWatchers(Number(id));
+      setWatchers(ws);
+      
+      toast({ 
+        status: 'success', 
+        title: 'Now watching ticket', 
+        description: 'You will receive notifications about this ticket' 
+      });
+    } catch (e: any) {
+      if (e.message.includes('already exists') || e.message.includes('duplicate') || e.response?.status === 409) {
+        toast({ 
+          status: 'info', 
+          title: 'Already watching', 
+          description: 'You are already watching this ticket' 
+        });
+      } else {
+        toast({ 
+          status: 'error', 
+          title: 'Failed to watch ticket', 
+          description: e.message 
+        });
       }
     } finally {
       setSubmitting(false);
@@ -1973,10 +2150,10 @@ export default function TicketDetailPage() {
                           {ticketAssets.map((asset) => (
                             <Card 
                               key={asset.asset_id} 
-                              bg={assetStatusUpdate.asset_id === asset.asset_id ? 'blue.50' : watcherBg} 
+                              bg={assetStatusUpdate.asset_id === asset.asset_id ? 'blue.50' : ticketWatcherBg} 
                               borderRadius="md" 
                               p={3} 
-                              variant="outline"
+                                                           variant="outline"
                               borderColor={assetStatusUpdate.asset_id === asset.asset_id ? 'blue.400' : undefined}
                               cursor="pointer"
                               onClick={() => {
@@ -2000,7 +2177,7 @@ export default function TicketDetailPage() {
                                       </Badge>
                                       {asset.status && (
                                         <Badge colorScheme={getAssetStatusColor(asset.status)} size="sm" variant="subtle">
-                                                                                                          {asset.status}
+                                          {asset.status}
                                         </Badge>
                                       )}
                                     </HStack>
@@ -2029,7 +2206,7 @@ export default function TicketDetailPage() {
                                                                        variant="ghost" 
                                     
                                     colorScheme="red"
-                                    onClick={(e) => { e.stopPropagation(); handleUnlinkAsset(asset.asset_id); }}
+                                    onClick={(e) => { e.stopPropagation(); handleTicketAssetUnlink(asset.asset_id); }}
                                   >
                                     Unlink
                                   </Button>
@@ -2057,18 +2234,31 @@ export default function TicketDetailPage() {
                           <FormLabel color={textSecondary}>Asset</FormLabel>
                           <Select 
                             value={assetStatusUpdate.asset_id || ''} 
-                            onChange={(e) => {
+                            onChange={async (e) => {
                               const newId = Number(e.target.value) || undefined;
                               if (!newId) {
                                 setAssetStatusUpdate({ ...assetStatusUpdate, asset_id: undefined });
                                 return;
                               }
                               const selected = ticketAssets.find(a => a.asset_id === newId);
+                              
+                              // Load asset notes from database
+                              let notes = '';
+                              try {
+                                const maintenance = await getAssetMaintenanceNotes(newId);
+                                notes = maintenance.notes || '';
+                                setAssetNotesMap(prev => ({ ...prev, [newId]: notes }));
+                              } catch (error) {
+                                console.error('Failed to load asset maintenance notes:', error);
+                                // Fallback to any existing notes in the map
+                                notes = assetNotesMap[newId] || '';
+                              }
+                              
                               setAssetStatusUpdate({ 
                                 ...assetStatusUpdate, 
                                 asset_id: newId, 
                                 status: normalizeAssetStatus(selected?.status),
-                                notes: (newId && assetNotesMap[newId]) ? assetNotesMap[newId] : ''
+                                notes
                               });
                             }}
                             placeholder="Select an asset to update"
@@ -2178,559 +2368,7 @@ export default function TicketDetailPage() {
                     <Divider />
 
                     {/* Service Request Management */}
-                    <Box>
-                      <Flex justify="space-between" align="center" mb={3}>
-                        <Text fontSize="md" fontWeight="bold" color={textPrimary}>
-                          Service Requests
-                        </Text>
-                        <Button 
-                          size="xs" 
-                          variant="outline" 
-                          colorScheme="blue" 
-                          onClick={() => setServiceRequestOpen(true)}
-                        >
-                          New Request
-                        </Button>
-                      </Flex>
-                      <VStack spacing={3} align="stretch">
-                        {/* Active Service Requests */}
-                        {serviceRequests.filter(r => r.status !== 'completed').length > 0 && (
-                          <Box mb={4}>
-                            <Text fontSize="sm" fontWeight="bold" color={textPrimary} mb={2}>Active Service Requests</Text>
-                            <VStack spacing={2} align="stretch">
-                              {serviceRequests.filter(r => r.status !== 'completed').map(r => (
-                                <HStack key={r.vsr_id} spacing={3} p={2} borderWidth="1px" borderColor={borderColor} borderRadius="md" bg={watcherBg} _hover={{ cursor:'pointer', bg: watcherHover }} onClick={() => {
-                                  setVsrForm({ vendor_id: r.vendor_id, request_type: r.request_type, status: r.status, notes: r.notes || '' });
-                                }}>
-                                  <Badge colorScheme={r.status === 'open' ? 'blue' : r.status === 'in_progress' ? 'yellow' : r.status === 'waiting_vendor' ? 'purple' : 'gray'}>{r.status.replace(/_/g,' ')}</Badge>
-                                  <Text fontSize="sm" color={textPrimary} flex={1}>{r.vendor_name}: {r.request_type}</Text>
-                                  <Text fontSize="xs" color={textSecondary}>{relativeTime(r.created_at)}</Text>
-                                  <Select size="xs" width="140px" value={r.status} onChange={(e) => {
-                                    const newStatus = e.target.value;
-                                    setServiceRequests(prev => prev.map(x => x.vsr_id === r.vsr_id ? { ...x, status: newStatus } : x));
-                                    // TODO: call backend upsert for status only when endpoint exists
-                                  }}>
-                                    <option value="open">Open</option>
-                                    <option value="in_progress">In Progress</option>
-                                    <option value="waiting_vendor">Waiting Vendor</option>
-                                    <option value="completed">Completed</option>
-                                  </Select>
-                                </HStack>
-                              ))}
-                            </VStack>
-                          </Box>
-                        )}
-                        {/* Existing Service Requests */}
-                        {serviceRequests.length > 0 ? (
-                          serviceRequests.map((request) => (
-                            <Card key={request.vsr_id} bg={watcherBg} borderRadius="md" p={3} variant="outline">
-                              <VStack align="stretch" spacing={2}>
-                                <HStack justify="space-between" align="start">
-                                  <VStack align="start" spacing={1} flex={1}>
-                                    <HStack spacing={2}>
-                                      <Text fontSize="sm" fontWeight="semibold" color={textPrimary}>
-                                        {request.vendor_name}
-                                      </Text>
-                                      <Badge colorScheme={request.status === 'Open' ? 'blue' : request.status === 'In Progress' ? 'orange' : 'green'} size="sm">
-                                        {request.status}
-                                      </Badge>
-                                    </HStack>
-                                    <Text fontSize="sm" color={textSecondary}>
-                                      {request.request_type}
-                                    </Text>
-                                    {request.notes && (
-                                      <Text fontSize="xs" color={textSecondary} mt={1}>
-                                        {request.notes}
-                                      </Text>
-                                    )}
-                                  </VStack>
-                                  <Text fontSize="xs" color={textSecondary}>
-                                    {new Date(request.created_at).toLocaleDateString()}
-                                  </Text>
-                                </HStack>
-                              </VStack>
-                            </Card>
-                          ))
-                        ) : (
-                          <Text color={textSecondary} fontSize="sm" fontStyle="italic" textAlign="center" py={2}>
-                            No service requests. Click &quot;New Request&quot; to create one.
-                          </Text>
-                        )}
-                      </VStack>
-                    </Box>
-                  </VStack>
-                </CardBody>
-              </Card>
-
-              {/* Attachments */}
-              <AttachmentManager
-                attachments={attachments as any}
-                onUpload={handleUploadAttachment}
-                onDownload={handleDownloadAttachment}
-                onDelete={handleDeleteAttachment}
-                onRefresh={loadAttachments}
-                isLoading={attachmentsLoading}
-                showKindSelector={true}
-                ticketId={Number(id)}
-              />
-            </VStack>
-
-            {/* Right Column - Sidebar */}
-            <VStack spacing={6} align="stretch">
-              {/* Quick Info Card */}
-              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
-                <CardHeader bg="gray.50" borderTopRadius="md">
-                  <Heading size="sm" color={textPrimary}>Quick Info</Heading>
-                </CardHeader>
-                <CardBody>
-                  <VStack spacing={4} align="stretch">
-                    <Stat>
-                      <StatLabel color={textSecondary}>Ticket Type</StatLabel>
-                      <StatNumber fontSize="md" color={textPrimary}>
-                        {getFriendlyTypeName() || '—'}
-                      </StatNumber>
-                    </Stat>
-
-                    <Divider />
-                    
-                    <Stat>
-                      <StatLabel color={textSecondary}>Category</StatLabel>
-                      {editMode ? (
-                        <ChakraSelect
-                          useBasicStyles
-                          isSearchable
-                          selectedOptionStyle="check"
-                          colorScheme="blue"
-                          value={
-                            metadata?.categories
-                              .map(c => ({ label: c.name, value: c.category_id }))
-                              .find(o => o.value === (editValues.category_id ?? ticket.category_id ?? undefined)) || null
-                          }
-                          onChange={(opt: any) => {
-                            const newVal = opt ? Number(opt.value) : null;
-                            setEditValues({ ...editValues, category_id: newVal });
-                            quickSaveField('category_id', newVal);
-                          }}
-                          options={metadata?.categories.map(c => ({ label: c.name, value: c.category_id })) || []}
-                          placeholder="Select category"
-                          isClearable
-                        />
-                      ) : (
-                        <StatNumber fontSize="md" color={textPrimary}>
-                          {ticket.category_name || 'No category'}
-                        </StatNumber>
-                      )}
-                      {quickSaving.category_id && <Text fontSize="xs" color={textSecondary}>Saving…</Text>}
-                    </Stat>
-                    
-                    <Divider />
-                    
-                    <Stat>
-                      <StatLabel color={textSecondary}>Last Updated</StatLabel>
-                      <StatNumber fontSize="md" color={textPrimary}>
-                        {new Date(ticket.updated_at).toLocaleDateString()}
-                      </StatNumber>
-                      <StatHelpText>
-                        {Math.floor((Date.now() - new Date(ticket.updated_at).getTime()) / (1000 * 60 * 60 * 24))} days ago
-                      </StatHelpText>
-                    </Stat>
-                    
-                    <Divider />
-                    
-                    <Stat>
-                      <StatLabel color={textSecondary}>Privacy Level</StatLabel>
-                      {editMode ? (
-                        <ChakraSelect
-                          useBasicStyles
-                          isSearchable
-                          selectedOptionStyle="check"
-                          colorScheme="blue"
-                          value={{ label: (editValues.privacy_level || ticket.privacy_level || 'public'), value: (editValues.privacy_level || ticket.privacy_level || 'public') }}
-                          onChange={(opt: any) => {
-                            const newVal = opt?.value;
-                            setEditValues({ ...editValues, privacy_level: newVal });
-                            quickSaveField('privacy_level', newVal);
-                          }}
-                          options={[
-                            { label: 'public', value: 'public' },
-                            { label: 'site_only', value: 'site_only' },
-                            { label: 'private', value: 'private' },
-                          ]}
-                        />
-                      ) : (
-                        <StatNumber fontSize="md" color={textPrimary}>
-                          <Badge colorScheme={ticket.privacy_level === 'public' ? 'green' : 'orange'}>
-                            {ticket.privacy_level || 'Public'}
-                          </Badge>
-                        </StatNumber>
-                      )}
-                      {quickSaving.privacy_level && <Text fontSize="xs" color={textSecondary}>Saving…</Text>}
-                    </Stat>
-                  </VStack>
-                </CardBody>
-              </Card>
-
-              {/* Quick Actions */}
-              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
-                <CardHeader bg={headerBg} borderTopRadius="md">
-                  <Heading size="sm" color={headerText}>Quick Actions</Heading>
-                </CardHeader>
-                <CardBody>
-                  <VStack spacing={3} align="stretch">
-                    {editMode ? (
-                      <>
-                        <Button 
-                          onClick={saveChanges} 
-                          isLoading={submitting}
-                          colorScheme="green" 
-                          variant="solid"
-                          size="sm"
-                          leftIcon={<Icon as={CheckIcon} />}
-                        >
-                          Save Changes
-                        </Button>
-                        <Button 
-                          onClick={() => setEditMode(false)} 
-                          variant="outline" 
-                          size="sm"
-                          leftIcon={<Icon as={XMarkIcon} />}
-                        >
-                          Cancel
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        <Button 
-                          onClick={() => setEditMode(true)} 
-                          colorScheme="blue" 
-                          variant="outline" 
-                          size="sm"
-                          leftIcon={<Icon as={PencilIcon} />}
-                        >
-                          Edit Ticket
-                        </Button>
-                        <Button 
-                          colorScheme={isWatching ? 'red' : 'green'} 
-                          variant="outline" 
-                          size="sm"
-                          onClick={handleWatchToggle}
-                          leftIcon={<Icon as={EyeIcon} />}
-                        >
-                          {isWatching ? 'Unwatch' : 'Watch Ticket'}
-                        </Button>
-                        <Button 
-                          colorScheme="orange" 
-                          variant="outline" 
-                          size="sm"
-                          leftIcon={<Icon as={ClockIcon} />}
-                        >
-                          Set Reminder
-                        </Button>
-                      </>
-                    )}
-                  </VStack>
-                </CardBody>
-              </Card>
-
-              {/* Watchers */}
-              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
-                <CardHeader bg={headerBg} borderTopRadius="md">
-                  <Flex justify="space-between" align="center">
-                    <Heading size="sm" color={headerText}>Team & Notifications</Heading>
-                    <Button size="xs" variant="outline" colorScheme="blue" onClick={() => setAddWatcherOpen(true)}>
-                      Add Contact
-                    </Button>
-                  </Flex>
-                </CardHeader>
-                <CardBody>
-                  <VStack spacing={4} align="stretch">
-                    {/* Assignee Section */}
-                    <Box>
-                      <Text fontSize="md" fontWeight="bold" color={textPrimary} mb={3}>
-                        Assignee
-                      </Text>
-                      {ticket.assignee_user_id ? (
-                        <Box borderWidth="2px" borderColor="purple.400" bg={assigneeBg} borderRadius="md" p={3}>
-                          <ContactInfoPopover
-                            contact={{
-                              user_id: ticket.assignee_user_id,
-                              name: ticket.assignee_name || undefined,
-                              email: metadata?.users.find(u => u.user_id === ticket.assignee_user_id)?.email,
-                              role: metadata?.users.find(u => u.user_id === ticket.assignee_user_id)?.role || undefined
-                            }}
-                            title="Assignee"
-                          >
-                            <HStack cursor="pointer" _hover={{ bg: assigneeHover }} borderRadius="md" p={2}>
-                              <Avatar size="sm" name={ticket.assignee_name || 'Assignee'} />
-                              <Box flex={1}>
-                                <Text fontSize="md" color={textPrimary} fontWeight="semibold">
-                                  {ticket.assignee_name || 'Assignee'}
-                                </Text>
-                                <Text fontSize="sm" color={textSecondary} fontWeight="medium">
-                                  {metadata?.users.find(u => u.user_id === ticket.assignee_user_id)?.email || `User #${ticket.assignee_user_id}`}
-                                </Text>
-                              </Box>
-                            </HStack>
-                          </ContactInfoPopover>
-                          <HStack justify="space-between" align="center" mt={2}>
-                            <Badge colorScheme={getRoleColor('assignee')} size="md" variant="solid">{getRoleLabel('assignee')}</Badge>
-                            {editMode && (
-                              <Button 
-                                size="xs" 
-                                variant="ghost" 
-                                colorScheme="red" 
-                                onClick={() => {
-                                  setEditValues({ ...editValues, assignee_user_id: null });
-                                  quickSaveField('assignee_user_id', null);
-                                }}
-                              >
-                                Unassign
-                              </Button>
-                            )}
-                          </HStack>
-                        </Box>
-                      ) : (
-                        <Box borderWidth="1px" borderColor={borderColor} borderRadius="md" p={3} borderStyle="dashed">
-                          {editMode ? (
-                            <ChakraSelect
-                              useBasicStyles
-                              isSearchable
-                              selectedOptionStyle="check"
-                              colorScheme="purple"
-                              value={null}
-                              onChange={(opt: any) => {
-                                const newVal = opt ? Number(opt.value) : null;
-                                setEditValues({ ...editValues, assignee_user_id: newVal });
-                                quickSaveField('assignee_user_id', newVal);
-                              }}
-                              options={metadata?.users.map(u => ({ label: `${u.name} (${u.email})`, value: u.user_id })) || []}
-                              placeholder="Select assignee"
-                              isClearable
-                            />
-                          ) : (
-                            <Text color={textPrimary} fontSize="md" fontStyle="italic" textAlign="center" py={4}>
-                              No assignee. {editMode ? 'Select someone to assign this ticket.' : 'Click Edit to assign someone.'}
-                            </Text>
-                          )}
-                        </Box>
-                      )}
-                      {quickSaving.assignee_user_id && <Text fontSize="xs" color={textSecondary}>Saving assignee…</Text>}
-                    </Box>
-
-                    <Divider />
-
-                    {/* Site Contacts Section */}
-                    {(() => {
-                      const siteContacts = watchers?.filter(w => w.watcher_type === 'site_contact' && w.is_active) || [];
-                      return (
-                        <Box>
-                          <Text fontSize="md" fontWeight="bold" color={textPrimary} mb={3}>
-                            Site Contacts {siteContacts.length > 0 && `(${siteContacts.length})`}
-                          </Text>
-                          {siteContacts.length > 0 ? (
-                            <VStack spacing={3} align="stretch">
-                              {siteContacts.map((w) => (
-                                <Box key={w.watcher_id} borderWidth="2px" borderColor="green.400" bg={siteContactBg} borderRadius="md" p={3}>
-                                  <ContactInfoPopover
-                                    contact={{
-                                      user_id: w.user_id || undefined,
-                                      name: w.user_name || w.name || undefined,
-                                      email: w.email || undefined,
-                                      watcher_type: w.watcher_type
-                                    }}
-                                    title="Site Contact"
-                                  >
-                                    <HStack cursor="pointer" _hover={{ bg: siteContactHover }} borderRadius="md" p={2}>
-                                      <Avatar size="sm" name={w.user_name || w.name || w.email || 'Site Contact'} />
-                                      <Box flex={1}>
-                                        <Text fontSize="md" color={textPrimary} fontWeight="semibold">
-                                          {w.user_name || w.name || 'External Contact'}
-                                        </Text>
-                                        <Text fontSize="sm" color={textSecondary} fontWeight="medium">
-                                          {w.email || (w.user_id ? `User #${w.user_id}` : '')}
-                                        </Text>
-                                      </Box>
-                                    </HStack>
-                                  </ContactInfoPopover>
-                                  <HStack justify="space-between" align="center" mt={2}>
-                                    <Badge colorScheme={getRoleColor('site_contact')} size="md" variant="solid">{getRoleLabel('site_contact')}</Badge>
-                                    <Button size="xs" variant="ghost" colorScheme="red" onClick={() => handleRemoveWatcher(w.watcher_id)}>
-                                      Remove
-                                    </Button>
-                                  </HStack>
-                                </Box>
-                              ))}
-                            </VStack>
-                          ) : (
-                            <Text color={textPrimary} fontSize="md" fontStyle="italic" textAlign="center" py={4}>
-                              No site contact assigned. Use &quot;Add Watcher&quot; and select &quot;Site Contact&quot; type.
-                            </Text>
-                          )}
-                        </Box>
-                      );
-                    })()}
-
-                    <Divider />
-
-                    {/* Other Watchers Section */}
-                    {(() => {
-                      const otherWatchers = watchers?.filter(w => w.watcher_type !== 'site_contact' && w.is_active) || [];
-                      return (
-                        <Box>
-                          <Text fontSize="md" fontWeight="bold" color={textPrimary} mb={3}>
-                            Other Watchers {otherWatchers.length > 0 && `(${otherWatchers.length})`}
-                          </Text>
-                          {otherWatchers.length > 0 ? (
-                            <VStack spacing={3} align="stretch">
-                              {otherWatchers.map((w) => (
-                                <Box key={w.watcher_id} borderWidth="2px" borderColor={borderColor} bg={watcherBg} borderRadius="md" p={3}>
-                                  <ContactInfoPopover
-                                    contact={{
-                                      user_id: w.user_id || undefined,
-                                      name: w.user_name || w.name || undefined,
-                                      email: w.email || undefined,
-                                      watcher_type: w.watcher_type
-                                    }}
-                                    title={`${w.watcher_type?.charAt(0).toUpperCase()}${w.watcher_type?.slice(1)} Watcher`}
-                                  >
-                                    <HStack cursor="pointer" _hover={{ bg: watcherHover }} borderRadius="md" p={2}>
-                                      <Avatar size="sm" name={w.user_name || w.name || w.email || 'Watcher'} />
-                                      <Box flex={1}>
-                                        <Text fontSize="md" color={textPrimary} fontWeight="semibold">
-                                          {w.user_name || w.name || 'External Watcher'}
-                                        </Text>
-                                        <Text fontSize="sm" color={textSecondary} fontWeight="medium">
-                                          {w.email || (w.user_id ? `User #${w.user_id}` : '')}
-                                        </Text>
-                                      </Box>
-                                    </HStack>
-                                  </ContactInfoPopover>
-                                  <HStack justify="space-between" align="center" mt={2}>
-                                    <Badge colorScheme={getRoleColor(w.watcher_type || 'interested')} size="md" variant="solid">{getRoleLabel(w.watcher_type || 'interested')}</Badge>
-                                    <Button size="xs" variant="ghost" colorScheme="red" onClick={() => handleRemoveWatcher(w.watcher_id)}>
-                                      Remove
-                                    </Button>
-                                  </HStack>
-                                </Box>
-                              ))}
-                            </VStack>
-                          ) : (
-                            <Text color={textPrimary} fontSize="md" fontStyle="italic" textAlign="center" py={4}>
-                              No other watchers yet
-                            </Text>
-                          )}
-                        </Box>
-                      );
-                    })()}
-                  </VStack>
-                </CardBody>
-              </Card>
-
-              {/* Vendor Service Request */}
-              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
-                <CardHeader bg={headerBg} borderTopRadius="md">
-                  <Heading size="sm" color={headerText}>Vendor Service Request</Heading>
-                </CardHeader>
-                <CardBody>
-                  <VStack spacing={3} align="stretch">
-                    {/* Active Service Requests summary */}
-                    {serviceRequests.filter(r => r.status !== 'completed').length > 0 && (
-                      <Box mb={4}>
-                        <Text fontSize="sm" fontWeight="bold" color={textPrimary} mb={2}>Active Service Requests</Text>
-                        <VStack spacing={2} align="stretch">
-                          {serviceRequests.filter(r => r.status !== 'completed').map(r => (
-                            <HStack key={r.vsr_id} spacing={3} p={2} borderWidth="1px" borderColor={borderColor} borderRadius="md" bg={watcherBg} _hover={{ cursor:'pointer', bg: watcherHover }} onClick={() => {
-                              setVsrForm({ vendor_id: r.vendor_id, request_type: r.request_type, status: r.status, notes: r.notes || '' });
-                            }}>
-                              <Badge colorScheme={r.status === 'open' ? 'blue' : r.status === 'in_progress' ? 'yellow' : r.status === 'waiting_vendor' ? 'purple' : 'gray'}>{r.status.replace(/_/g,' ')}</Badge>
-                              <Text fontSize="sm" color={textPrimary} flex={1}>{r.vendor_name}: {r.request_type}</Text>
-                              <Text fontSize="xs" color={textSecondary}>{relativeTime(r.created_at)}</Text>
-                              <Select size="xs" width="140px" value={r.status} onChange={(e) => {
-                                const newStatus = e.target.value;
-                                setServiceRequests(prev => prev.map(x => x.vsr_id === r.vsr_id ? { ...x, status: newStatus } : x));
-                                // TODO: call backend upsert for status only when endpoint exists
-                              }}>
-                                <option value="open">Open</option>
-                                <option value="in_progress">In Progress</option>
-                                <option value="waiting_vendor">Waiting Vendor</option>
-                                <option value="completed">Completed</option>
-                              </Select>
-                            </HStack>
-                          ))}
-                        </VStack>
-                      </Box>
-                    )}
-                    <FormControl>
-                      <FormLabel color={textSecondary}>Vendor</FormLabel>
-                      <Select 
-                        value={vsrForm.vendor_id || ''} 
-                        onChange={(e) => setVsrForm({ ...vsrForm, vendor_id: Number(e.target.value) || null })}
-                        placeholder="Select a vendor"
-                      >
-                        {vendors.map(vendor => (
-                          <option key={vendor.vendor_id} value={vendor.vendor_id}>
-                            {vendor.name}
-                          </option>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <FormControl>
-                      <FormLabel color={textSecondary}>Request Type</FormLabel>
-                      <Input value={vsrForm.request_type} onChange={(e) => setVsrForm({ ...vsrForm, request_type: e.target.value })} placeholder="e.g., Repair, Install, PM" />
-                    </FormControl>
-                    <FormControl>
-                      <FormLabel color={textSecondary}>Status</FormLabel>
-                      <Select value={vsrForm.status} onChange={(e) => setVsrForm({ ...vsrForm, status: e.target.value })}>
-                        <option value="open">Open</option>
-                        <option value="in_progress">In Progress</option>
-                        <option value="pending">Pending</option>
-                        <option value="completed">Completed</option>
-                        <option value="cancelled">Cancelled</option>
-                      </Select>
-                    </FormControl>
-                    <FormControl>
-                      <FormLabel color={textSecondary}>Notes</FormLabel>
-                      <Textarea 
-                        rows={4} 
-                        value={vsrForm.notes} 
-                        onChange={(e) => setVsrForm({ ...vsrForm, notes: e.target.value })} 
-                        placeholder="Optional notes for the vendor"
-                      />
-                    </FormControl>
-                    <HStack justify="flex-end">
-                      <Button
-                        size="sm"
-                        colorScheme="blue"
-                        isDisabled={!vsrForm.vendor_id || !vsrForm.request_type}
-                        isLoading={submitting}
-                        onClick={async () => {
-                          try {
-                            setSubmitting(true);
-                            await upsertVendorServiceRequest({
-                              ticket_id: Number(id),
-                              vendor_id: Number(vsrForm.vendor_id),
-                              request_type: vsrForm.request_type,
-                              status: vsrForm.status,
-                              notes: vsrForm.notes || undefined
-                            });
-                            setVendorNotesMap(prev => vsrForm.vendor_id ? { ...prev, [vsrForm.vendor_id]: vsrForm.notes } : prev);
-                            toast({ status: 'success', title: 'Service request saved' });
-                            try {
-                              await postTicketMessage(Number(id), { message_type: 'system', content_format: 'text', body: `Vendor service request created for vendor ${vendors.find(v => v.vendor_id === vsrForm.vendor_id)?.name || vsrForm.vendor_id}` });
-                              const updatedMessages = await getTicketMessages(Number(id));
-                              setMessages(updatedMessages);
-                            } catch {}
-                            setVsrForm({ vendor_id: null, request_type: '', status: 'open', notes: '' });
-                          } catch (e: any) {
-                            toast({ status: 'error', title: 'Failed to save service request', description: e.message });
-                          } finally {
-                            setSubmitting(false);
-                          }
-                        }}
-                      >
-                        Save Request
-                      </Button>
-                    </HStack>
+                    <VendorServiceRequestsPanel ticketId={Number(id)} vendors={vendors} />
                   </VStack>
                 </CardBody>
               </Card>
@@ -2837,9 +2475,9 @@ export default function TicketDetailPage() {
                               key={asset.asset_id} 
                               variant="outline" 
                               cursor="pointer" 
-                              _hover={{ bg: watcherBg }}
+                              _hover={{ bg: ticketWatcherBg }}
                               onClick={() => setSelectedAsset(asset)}
-                              bg={selectedAsset?.asset_id === asset.asset_id ? watcherBg : 'transparent'}
+                              bg={selectedAsset?.asset_id === asset.asset_id ? ticketWatcherBg : 'transparent'}
                               borderColor={selectedAsset?.asset_id === asset.asset_id ? 'blue.400' : borderColor}
                             >
                               <CardBody p={3}>
@@ -2912,97 +2550,408 @@ export default function TicketDetailPage() {
                 </ModalContent>
               </Modal>
 
-              {/* Service Request Modal */}
-              <Modal isOpen={serviceRequestOpen} onClose={() => setServiceRequestOpen(false)} size="lg">
-                <ModalOverlay />
-                <ModalContent bg={cardBg}>
-                  <ModalHeader color={headerText}>Create Service Request</ModalHeader>
-                  <ModalCloseButton />
-                  <ModalBody>
-                    <VStack spacing={4} align="stretch">
-                      <FormControl>
-                        <FormLabel color={textSecondary}>Vendor</FormLabel>
-                        <Select 
-                          value={vsrForm.vendor_id || ''} 
-                          onChange={(e) => setVsrForm({ ...vsrForm, vendor_id: Number(e.target.value) || null })}
-                          placeholder="Select a vendor"
+              {/* Service request modal & history handled inside component */}
+            </VStack>
+
+            {/* Right Column - Sidebar */}
+            <VStack spacing={6} align="stretch">
+              {/* Quick Info Card */}
+              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
+                <CardHeader bg="gray.50" borderTopRadius="md">
+                  <Heading size="sm" color={textPrimary}>Quick Info</Heading>
+                </CardHeader>
+                <CardBody>
+                  <VStack spacing={4} align="stretch">
+                    <Stat>
+                      <StatLabel color={textSecondary}>Assigned To</StatLabel>
+                      <StatNumber fontSize="md" color={textPrimary}>
+                        {ticket.assignee_name || 'Unassigned'}
+                      </StatNumber>
+                    </Stat>
+                    
+                    <Divider />
+                    
+                    <Stat>
+                      <StatLabel color={textSecondary}>Category</StatLabel>
+                      <StatNumber fontSize="md" color={textPrimary}>
+                        {ticket.category_name || 'No category'}
+                      </StatNumber>
+                    </Stat>
+                    
+                    <Divider />
+                    
+                    <Stat>
+                      <StatLabel color={textSecondary}>Last Updated</StatLabel>
+                      <StatNumber fontSize="md" color={textPrimary}>
+                        {new Date(ticket.updated_at).toLocaleDateString()}
+                      </StatNumber>
+                      <StatHelpText>
+                        {Math.floor((Date.now() - new Date(ticket.updated_at).getTime()) / (1000 * 60 * 60 * 24))} days ago
+                      </StatHelpText>
+                    </Stat>
+                    
+                    <Divider />
+                    
+                    <Stat>
+                      <StatLabel color={textSecondary}>Privacy Level</StatLabel>
+                      <StatNumber fontSize="md" color={textPrimary}>
+                        <Badge colorScheme={ticket.privacy_level === 'public' ? 'green' : 'orange'}>
+                          {ticket.privacy_level || 'Public'}
+                        </Badge>
+                      </StatNumber>
+                    </Stat>
+                  </VStack>
+                </CardBody>
+              </Card>
+
+              {/* Quick Actions */}
+              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
+                <CardHeader bg="gray.50" borderTopRadius="md">
+                  <Heading size="sm" color={textPrimary}>Quick Actions</Heading>
+                </CardHeader>
+                <CardBody>
+                  <VStack spacing={4} align="stretch">
+                    {editMode ? (
+                      <>
+                        <Button 
+                          onClick={saveChanges} 
+                          isLoading={submitting}
+                          colorScheme="green" 
+                          size="sm"
+                          leftIcon={<Icon as={CheckIcon} />}
                         >
-                          {vendors.map(vendor => (
-                            <option key={vendor.vendor_id} value={vendor.vendor_id}>
-                              {vendor.name}
-                            </option>
-                          ))}
-                        </Select>
-                      </FormControl>
-                      <FormControl>
-                        <FormLabel color={textSecondary}>Request Type</FormLabel>
-                        <Select 
-                          value={vsrForm.request_type} 
-                          onChange={(e) => setVsrForm({ ...vsrForm, request_type: e.target.value })}
-                          placeholder="Select request type"
+                          Save Changes
+                        </Button>
+                        <Button 
+                          onClick={() => setEditMode(false)} 
+                          variant="outline" 
+                          size="sm"
+                          leftIcon={<Icon as={XMarkIcon} />}
                         >
-                          <option value="warranty_claim">Warranty Claim</option>
-                          <option value="maintenance_request">Maintenance Request</option>
-                          <option value="parts_order">Parts Order</option>
-                          <option value="technical_support">Technical Support</option>
-                          <option value="installation">Installation</option>
-                          <option value="consultation">Consultation</option>
-                          <option value="other">Other</option>
-                        </Select>
-                      </FormControl>
-                      <FormControl>
-                        <FormLabel color={textSecondary}>Status</FormLabel>
-                        <Select 
-                          value={vsrForm.status} 
-                          onChange={(e) => setVsrForm({ ...vsrForm, status: e.target.value })}
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button 
+                          onClick={() => setEditMode(true)} 
+                          colorScheme="blue" 
+                          variant="outline" 
+                          size="sm"
+                          leftIcon={<Icon as={PencilIcon} />}
                         >
-                          <option value="Open">Open</option>
-                          <option value="In Progress">In Progress</option>
-                          <option value="Pending">Pending</option>
-                          <option value="Completed">Completed</option>
-                          <option value="Cancelled">Cancelled</option>
-                        </Select>
-                      </FormControl>
-                      <FormControl>
-                        <FormLabel color={textSecondary}>Notes</FormLabel>
-                        <Textarea 
-                          rows={4} 
-                          value={vsrForm.notes} 
-                          onChange={(e) => setVsrForm({ ...vsrForm, notes: e.target.value })} 
-                          placeholder="Describe the service request details, urgency, and any specific requirements..."
-                        />
-                      </FormControl>
-                    </VStack>
-                  </ModalBody>
-                  <ModalFooter>
-                    <Button variant="ghost" mr={3} onClick={() => setServiceRequestOpen(false)}>
-                      Cancel
-                    </Button>
+                          Edit Ticket
+                        </Button>
+                        
+                        <Divider />
+                        
+                        {/* Assign To Dropdown */}
+                        <VStack align="stretch" spacing={2}>
+                          <Text fontSize="xs" color={textSecondary} fontWeight="semibold">ASSIGN TO</Text>
+                          <ChakraSelect
+                            useBasicStyles
+                            isSearchable
+                            selectedOptionStyle="check"
+                            colorScheme="blue"
+                            size="sm"
+                            value={
+                              ticket.assignee_user_id
+                                ? metadata?.users.map(u => ({ label: u.name, value: u.user_id })).find(o => o.value === ticket.assignee_user_id) || null
+                                : null
+                            }
+                            onChange={(opt: any) => handleAssignUser(opt ? opt.value : null)}
+                            options={metadata?.users.map(u => ({ label: u.name, value: u.user_id })) || []}
+                            placeholder="Select user..."
+                            isClearable
+                            isLoading={submitting}
+                          />
+                        </VStack>
+                        
+                        {/* Category Dropdown */}
+                        <VStack align="stretch" spacing={2}>
+                          <Text fontSize="xs" color={textSecondary} fontWeight="semibold">CATEGORY</Text>
+                          <ChakraSelect
+                            useBasicStyles
+                            isSearchable
+                            selectedOptionStyle="check"
+                            colorScheme="blue"
+                            size="sm"
+                            value={
+                              ticket.category_id
+                                ? metadata?.categories.map(c => ({ label: c.name, value: c.category_id })).find(o => o.value === ticket.category_id) || null
+                                : null
+                            }
+                            onChange={(opt: any) => handleCategoryChange(opt ? opt.value : null)}
+                            options={metadata?.categories.map(c => ({ label: c.name, value: c.category_id })) || []}
+                            placeholder="Select category..."
+                            isClearable
+                            isLoading={submitting}
+                          />
+                        </VStack>
+                        
+                        {/* Privacy Level Dropdown */}
+                        <VStack align="stretch" spacing={2}>
+                          <Text fontSize="xs" color={textSecondary} fontWeight="semibold">PRIVACY LEVEL</Text>
+                          <ChakraSelect
+                            useBasicStyles
+                            selectedOptionStyle="check"
+                            colorScheme="blue"
+                            size="sm"
+                            value={
+                              ticket.privacy_level
+                                ? { label: ticket.privacy_level === 'public' ? 'Public' : ticket.privacy_level === 'site_only' ? 'Site Only' : 'Private', value: ticket.privacy_level }
+                                : { label: 'Public', value: 'public' }
+                            }
+                            onChange={(opt: any) => handlePrivacyChange(opt.value)}
+                            options={[
+                              { label: 'Public', value: 'public' },
+                              { label: 'Site Only', value: 'site_only' },
+                              { label: 'Private', value: 'private' }
+                            ]}
+                            isLoading={submitting}
+                          />
+                        </VStack>
+                        
+                        <Divider />
+                        
+                        <Button 
+                          colorScheme="green" 
+                          variant="outline" 
+                          size="sm"
+                          leftIcon={<Icon as={EyeIcon} />}
+                          onClick={handleWatchTicket}
+                          isLoading={submitting}
+                        >
+                          Watch Ticket
+                        </Button>
+                        <Button 
+                          colorScheme="orange" 
+                          variant="outline" 
+                          size="sm"
+                          leftIcon={<Icon as={ClockIcon} />}
+                          onClick={() => setReminderOpen(true)}
+                        >
+                          Set Reminder
+                        </Button>
+                      </>
+                    )}
+                  </VStack>
+                </CardBody>
+              </Card>
+
+              {/* Watchers */}
+              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
+                <CardHeader bg="gray.50" borderTopRadius="md">
+                  <Flex justify="space-between" align="center">
+                    <Heading size="sm" color={textPrimary}>Watchers</Heading>
+                    <Badge colorScheme="blue" variant="subtle">{watchers.length}</Badge>
+                  </Flex>
+                </CardHeader>
+                <CardBody>
+                  <VStack spacing={3} align="stretch">
+                    {watchers.length > 0 ? (
+                      watchers.map((watcher) => (
+                        <HStack key={watcher.watcher_id} justify="space-between" p={2} bg="gray.50" borderRadius="md">
+                          <VStack align="start" spacing={0} flex={1}>
+                            <Text fontSize="sm" fontWeight="semibold" color={textPrimary}>
+                              {watcher.name || 'Unknown'}
+                            </Text>
+                            <Text fontSize="xs" color={textSecondary}>
+                              {watcher.email}
+                            </Text>
+                            <Badge size="xs" colorScheme="blue" variant="subtle">
+                              {watcher.watcher_type}
+                            </Badge>
+                          </VStack>
+                          <IconButton
+                            size="xs"
+                            variant="ghost"
+                            colorScheme="red"
+                            icon={<XMarkIcon />}
+                            onClick={() => handleRemoveWatcher(watcher.watcher_id)}
+                            aria-label="Remove watcher"
+                          />
+                        </HStack>
+                      ))
+                    ) : (
+                      <Text color={textSecondary} fontSize="sm" textAlign="center">
+                        No watchers yet
+                      </Text>
+                    )}
                     <Button 
-                      colorScheme="blue" 
-                      isDisabled={!vsrForm.vendor_id || !vsrForm.request_type}
-                      onClick={handleCreateServiceRequest}
+                      size="sm" 
+                      variant="outline" 
+                      colorScheme="blue"
+                      onClick={() => setAddWatcherOpen(true)}
                     >
-                      Create Request
+                      Add Watcher
                     </Button>
-                  </ModalFooter>
-                </ModalContent>
-              </Modal>
+                  </VStack>
+                </CardBody>
+              </Card>
+
+              {/* Attachments */}
+              <Card bg={cardBg} shadow="lg" borderColor={borderColor}>
+                <CardHeader bg="gray.50" borderTopRadius="md">
+                  <Flex justify="space-between" align="center">
+                    <Heading size="sm" color={textPrimary}>Attachments</Heading>
+                    <Badge colorScheme="blue" variant="subtle">{attachments.length}</Badge>
+                  </Flex>
+                </CardHeader>
+                <CardBody>
+                  <VStack spacing={3} align="stretch">
+                    {attachmentsLoading ? (
+                      <VStack spacing={2}>
+                        <Spinner size="sm" />
+                        <Text fontSize="sm" color={textSecondary}>Loading attachments...</Text>
+                      </VStack>
+                    ) : attachments.length > 0 ? (
+                      attachments.map((attachment) => (
+                        <HStack key={attachment.attachment_id} justify="space-between" p={2} bg="gray.50" borderRadius="md">
+                          <VStack align="start" spacing={0} flex={1}>
+                            <Text fontSize="sm" fontWeight="semibold" color={textPrimary} noOfLines={1}>
+                              {attachment.original_filename}
+                            </Text>
+                            <Text fontSize="xs" color={textSecondary}>
+                              {attachment.file_size ? `${Math.round(attachment.file_size / 1024)} KB` : 'Unknown size'}
+                            </Text>
+                          </VStack>
+                          <HStack spacing={1}>
+                            <Tooltip label="Preview">
+                              <IconButton
+                                size="xs"
+                                variant="ghost"
+                                colorScheme="blue"
+                                icon={<EyeIcon />}
+                                onClick={() => handlePreviewAttachment(attachment.attachment_id, attachment.original_filename, attachment.mime_type)}
+                                aria-label="Preview attachment"
+                              />
+                            </Tooltip>
+                            <Tooltip label="Download">
+                              <IconButton
+                                size="xs"
+                                variant="ghost"
+                                colorScheme="green"
+                                icon={<ArrowDownTrayIcon />}
+                                onClick={() => handleDownloadAttachment(attachment.attachment_id, attachment.original_filename)}
+                                aria-label="Download attachment"
+                              />
+                            </Tooltip>
+                            <Tooltip label="Delete">
+                              <IconButton
+                                size="xs"
+                                variant="ghost"
+                                colorScheme="red"
+                                icon={<XMarkIcon />}
+                                onClick={() => handleDeleteAttachment(attachment.attachment_id)}
+                                aria-label="Delete attachment"
+                              />
+                            </Tooltip>
+                          </HStack>
+                        </HStack>
+                      ))
+                    ) : (
+                      <Text color={textSecondary} fontSize="sm" textAlign="center">
+                        No attachments yet
+                      </Text>
+                    )}
+                    <Button 
+                      size="sm" 
+                      variant="outline" 
+                      colorScheme="blue"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      Upload File
+                    </Button>
+                  </VStack>
+                </CardBody>
+              </Card>
             </VStack>
           </Grid>
+          
+          {/* Hidden file input for attachment uploads */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            style={{ display: 'none' }}
+            onChange={handleFileUpload}
+            accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.gif,.mp4,.avi,.mov,.txt,.xls,.xlsx,.ppt,.pptx"
+          />
+          
+          {/* Reminder Modal */}
+          <Modal isOpen={reminderOpen} onClose={() => setReminderOpen(false)}>
+            <ModalOverlay />
+            <ModalContent>
+              <ModalHeader>Set Reminder</ModalHeader>
+              <ModalCloseButton />
+              <ModalBody pb={6}>
+                <VStack align="stretch" spacing={4}>
+                  <Text fontSize="sm" color={textSecondary}>
+                    Set a reminder for ticket #{ticket?.ticket_id}. You will receive a notification at the specified time.
+                  </Text>
+                  
+                  <FormControl isRequired>
+                    <FormLabel>Reminder Date</FormLabel>
+                    <Input 
+                      type="date" 
+                      value={reminderDate} 
+                      onChange={(e) => setReminderDate(e.target.value)}
+                      min={new Date().toISOString().split('T')[0]} // Don't allow past dates
+                    />
+                  </FormControl>
+                  
+                  <FormControl isRequired>
+                    <FormLabel>Reminder Time</FormLabel>
+                    <Input 
+                      type="time" 
+                      value={reminderTime} 
+                      onChange={(e) => setReminderTime(e.target.value)}
+                    />
+                  </FormControl>
+                  
+                  <FormControl>
+                    <FormLabel>Note (optional)</FormLabel>
+                    <Textarea 
+                      value={reminderNote} 
+                      onChange={(e) => setReminderNote(e.target.value)}
+                      placeholder="Add a note about what to remember..."
+                      rows={3}
+                    />
+                  </FormControl>
+                  
+                  {reminderDate && reminderTime && (
+                    <Box p={3} bg="blue.50" borderRadius="md" borderColor="blue.200" borderWidth="1px">
+                      <Text fontSize="sm" color="blue.700" fontWeight="semibold">
+                        Reminder Preview:
+                      </Text>
+                      <Text fontSize="sm" color="blue.600">
+                        {new Date(`${reminderDate}T${reminderTime}`).toLocaleDateString()} at {new Date(`${reminderDate}T${reminderTime}`).toLocaleTimeString()}
+                      </Text>
+                    </Box>
+                  )}
+                </VStack>
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="ghost" mr={3} onClick={() => setReminderOpen(false)}>
+                  Cancel
+                </Button>
+                <Button 
+                  colorScheme="orange" 
+                  onClick={handleSetReminder}
+                  isLoading={submitting}
+                  isDisabled={!reminderDate || !reminderTime}
+                >
+                  Set Reminder
+                </Button>
+              </ModalFooter>
+            </ModalContent>
+          </Modal>
         </Container>
       </Box>
     </AppLayout>
   );
 }
 
-// Helper to normalize status values received from API (which may be uppercase)
-const normalizeAssetStatus = (s?: string) => {
-  if (!s) return 'operational';
-  const lower = s.toLowerCase();
-  const allowed = ['operational','warning','critical','maintenance','offline'];
-  return allowed.includes(lower) ? lower : 'operational';
-};
 
 function relativeTime(dateIso: string) {
   const d = new Date(dateIso);
@@ -3015,17 +2964,4 @@ function relativeTime(dateIso: string) {
 }
 
 // Persistence for vendor notes map
-useEffect(() => {
-  if (id) {
-    try {
-      const stored = localStorage.getItem(`ticket_${id}_vendorNotes`);
-      if (stored) setVendorNotesMap(JSON.parse(stored));
-    } catch {}
-  }
-}, [id]);
-
-useEffect(() => {
-  if (id) {
-    try { localStorage.setItem(`ticket_${id}_vendorNotes`, JSON.stringify(vendorNotesMap)); } catch {}
-  }
-}, [id, vendorNotesMap]);
+// Removed vendor notes persistence (handled in component)

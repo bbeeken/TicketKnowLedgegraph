@@ -118,9 +118,10 @@ class OpsGraphAuth {
     // Notify all listeners
     this.authStateListeners.forEach(listener => listener(user));
     
-    // Session context removed - API now uses JWT bearer tokens for RLS
-    if (user && typeof window !== 'undefined' && !(window as any).__opsgraph_session_context_warning_shown) {
-      console.warn('[OpsGraph] Session context API removed. Backend now uses JWT bearer tokens for RLS. This warning will only show once.');
+    // Development-only logging for session context migration
+    if (user && typeof window !== 'undefined' && process.env.NODE_ENV === 'development' && 
+        !(window as any).__opsgraph_session_context_warning_shown) {
+      console.debug('[OpsGraph] Session context API removed. Backend now uses JWT bearer tokens for RLS.');
       (window as any).__opsgraph_session_context_warning_shown = true;
     }
   }

@@ -3,7 +3,7 @@ import { apiFetch } from './client';
 
 // Vendor schema
 export const VendorSchema = z.object({
-  vendor_id: z.number(),
+  vendor_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
   name: z.string(),
   category: z.string(),
   created_at: z.string().optional(),
@@ -14,9 +14,11 @@ export type Vendor = z.infer<typeof VendorSchema>;
 
 // Asset summary for vendor
 export const VendorAssetSchema = z.object({
-  asset_id: z.number(),
-  site_id: z.number(),
-  zone_id: z.number().nullable(),
+  asset_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
+  site_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
+  zone_id: z.union([z.number(), z.string(), z.null()]).transform(val => 
+    val === null ? null : (typeof val === 'string' ? parseInt(val, 10) : val)
+  ),
   type: z.string(),
   model: z.string().nullable(),
   serial: z.string().nullable(),
@@ -39,9 +41,9 @@ export type VendorWithAssets = z.infer<typeof VendorWithAssetsSchema>;
 
 // Vendor Service Request schemas
 export const VendorServiceRequestSchema = z.object({
-  vsr_id: z.number(),
-  ticket_id: z.number(),
-  vendor_id: z.number(),
+  vsr_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
+  ticket_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
+  vendor_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
   request_type: z.string(),
   status: z.string(),
   notes: z.string().nullable().optional(),
@@ -52,16 +54,18 @@ export const VendorServiceRequestSchema = z.object({
 export type VendorServiceRequest = z.infer<typeof VendorServiceRequestSchema>;
 
 export const VendorServiceRequestHistorySchema = z.object({
-  history_id: z.number(),
-  vsr_id: z.number(),
-  ticket_id: z.number(),
-  vendor_id: z.number(),
+  history_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
+  vsr_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
+  ticket_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
+  vendor_id: z.union([z.number(), z.string()]).transform(val => typeof val === 'string' ? parseInt(val, 10) : val),
   change_type: z.string(),
   old_status: z.string().nullable(),
   new_status: z.string().nullable(),
   old_notes: z.string().nullable(),
   new_notes: z.string().nullable(),
-  changed_by: z.number().nullable(),
+  changed_by: z.union([z.number(), z.string(), z.null()]).transform(val => 
+    val === null ? null : (typeof val === 'string' ? parseInt(val, 10) : val)
+  ),
   changed_at: z.string(),
   metadata: z.string().nullable(),
 });
@@ -86,7 +90,14 @@ export const getVendorAssets = async (id: number): Promise<VendorAsset[]> => {
 // List vendor service requests for a ticket
 export async function listVendorServiceRequests(ticket_id: number): Promise<VendorServiceRequest[]> {
   const data = await apiFetch(`/tickets/${ticket_id}/service-requests`);
-  return z.array(VendorServiceRequestSchema).parse(data);
+  const parsed = z.array(VendorServiceRequestSchema).safeParse(data);
+  if (!parsed.success) {
+    // Log full payload + issues for debugging integration mismatches
+    console.error('[listVendorServiceRequests] Zod parse failure', parsed.error.issues, data);
+    // Provide a concise error message upward (toast will show description)
+    throw new Error('Invalid service request payload returned from API');
+  }
+  return parsed.data;
 }
 
 // Get single vendor service request

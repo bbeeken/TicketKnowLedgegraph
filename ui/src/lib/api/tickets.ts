@@ -157,8 +157,8 @@ export interface CreateTicketPayload {
 }
 
 export interface UpdateTicketPayload {
-  assignee_user_id?: number;
-  category_id?: number;
+  assignee_user_id?: number | null;
+  category_id?: number | null;
   site_id?: number;
   status?: string;
   substatus_code?: string;

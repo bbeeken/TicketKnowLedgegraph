@@ -130,6 +130,15 @@ export const updateAssetStatus = async (
   });
 };
 
+// Get asset maintenance notes
+export const getAssetMaintenanceNotes = async (
+  assetId: number
+): Promise<{ notes: string | null; created_at: string | null; performed_at?: string | null; performed_by?: number | null }> => {
+  return await apiFetch(`/assets/${assetId}/maintenance/notes`, {
+    method: 'GET',
+  });
+};
+
 // Asset Attachments API
 export const assetAttachmentSchema = z.object({
   attachment_id: z.number(),
